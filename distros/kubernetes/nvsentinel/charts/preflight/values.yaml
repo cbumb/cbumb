@@ -17,7 +17,7 @@ replicaCount: 1
 image:
   repository: ghcr.io/nvidia/nvsentinel/preflight
   pullPolicy: IfNotPresent
-  tag: ""
+  tag: latest
 
 imagePullSecrets: []
 nameOverride: ""
@@ -81,12 +81,31 @@ webhook:
   certIssuer: ""
   caCertificateName: ""
 
-# Init containers to inject into GPU pods
-initContainers:
-  - name: preflight-ping
-    image: ghcr.io/nvidia/nvsentinel/ping:latest
+# Local fallback values - global.dcgm takes precedence when set
+dcgm:
+  service:
+    # DCGM hostengine service endpoint (fallback when global.dcgm.service not set)
+    endpoint: "nvidia-dcgm.gpu-operator.svc"
+    port: 5555
+  # Diagnostic level:
+  #   1 = Quick (~30 seconds) - basic health check
+  #   2 = Medium (~2 minutes) - more thorough
+  #   3 = Long (~15 minutes) - comprehensive
+  diagLevel: 2
+  # Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY
+  processingStrategy: "EXECUTE_REMEDIATION"
 
-# GPU resource names that trigger preflight injection
+initContainers:
+  - name: preflight-dcgm-diag
+    image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:latest
+    volumeMounts:
+      - name: nvsentinel-socket
+        mountPath: /var/run
+    # Full corev1.Container fields supported:
+    # resources:
+    #   limits:
+    #     memory: 512Mi
+
 gpuResourceNames:
   - "nvidia.com/gpu"
 
@@ -102,4 +121,3 @@ namespaceSelector:
 
 networkPolicy:
   enabled: true
-
