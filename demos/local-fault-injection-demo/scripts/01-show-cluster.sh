@@ -105,7 +105,11 @@ main() {
         echo "Node: $node_name"
         
         # Get all conditions and capture for checking while also displaying
-        conditions_output=$(kubectl get "$node" -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}' | \
+        node_conditions=$(kubectl get "$node" -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}') || {
+            echo "  ⚠️  Failed to fetch conditions for $node_name"
+            continue
+        }
+        conditions_output=$(echo "$node_conditions" | \
             grep -v "^Ready\|^MemoryPressure\|^DiskPressure\|^PIDPressure\|^NetworkUnavailable" || true)
         
         echo "$conditions_output"
