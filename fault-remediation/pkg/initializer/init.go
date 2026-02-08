@@ -48,7 +48,6 @@ type Components struct {
 	FaultRemediationReconciler reconciler.FaultRemediationReconciler
 }
 
-// nolint: cyclop // todo
 func InitializeAll(
 	ctx context.Context,
 	params InitializationParams,
@@ -56,81 +55,29 @@ func InitializeAll(
 ) (*Components, error) {
 	slog.Info("Starting fault remediation module initialization")
 
-	tokenConfig, err := storeconfig.TokenConfigFromEnv("fault-remediation")
+	tokenConfig, pipeline, err := loadTokenConfigAndPipeline()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load token configuration: %w", err)
+		return nil, err
 	}
 
-	builder := client.GetPipelineBuilder()
-	pipeline := builder.BuildQuarantinedAndDrainedNodesPipeline()
-
-	var tomlConfig config.TomlConfig
-	if err := configmanager.LoadTOMLConfig(params.TomlConfigPath, &tomlConfig); err != nil {
-		return nil, fmt.Errorf("error while loading the toml Config: %w", err)
-	}
-
-	// Validate the configuration for consistency
-	if err := tomlConfig.Validate(); err != nil {
-		return nil, fmt.Errorf("configuration validation failed: %w", err)
-	}
-
-	if params.DryRun {
-		slog.Info("Running in dry-run mode")
-	}
-
-	if params.EnableLogCollector {
-		slog.Info("Log collector enabled")
-	}
-
-	remediationClient, err := remediation.NewRemediationClient(
-		ctrlruntimeClient,
-		params.DryRun,
-		tomlConfig,
-	)
+	tomlConfig, err := loadAndValidateToml(params.TomlConfigPath)
 	if err != nil {
-		return nil, fmt.Errorf("error while initializing remediation client: %w", err)
+		return nil, err
 	}
 
-	kubeClient, err := kubernetes.NewForConfig(params.Config)
+	logInitMode(params)
+
+	remediationClient, stateManager, err := initRemediationClientAndStateManager(
+		params.Config, tomlConfig, ctrlruntimeClient, params.DryRun)
 	if err != nil {
-		return nil, fmt.Errorf("error init kube client for state manager: %w", err)
+		return nil, err
 	}
 
-	stateManager := statemanager.NewStateManager(kubeClient)
-
-	slog.Info("Successfully initialized client")
-
-	// Load datastore configuration
-	datastoreConfig, err := datastore.LoadDatastoreConfig()
+	ds, watcherInstance, healthEventStore, datastoreConfig, clientTokenConfig, err := initDatastoreAndWatcher(
+		ctx, tokenConfig, pipeline)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load datastore configuration: %w", err)
+		return nil, err
 	}
-
-	// Convert store Config types to the types expected by reconciler
-	clientTokenConfig := client.TokenConfig{
-		ClientName:      tokenConfig.ClientName,
-		TokenDatabase:   tokenConfig.TokenDatabase,
-		TokenCollection: tokenConfig.TokenCollection,
-	}
-
-	ds, err := datastore.NewDataStore(ctx, *datastoreConfig)
-	if err != nil {
-		return nil, fmt.Errorf("error initializing datastore: %w", err)
-	}
-
-	// Create watcher using the factory pattern
-	watcherConfig := watcher.WatcherConfig{
-		Pipeline:       pipeline,
-		CollectionName: "HealthEvents",
-	}
-
-	watcherInstance, err := watcher.CreateChangeStreamWatcher(ctx, ds, watcherConfig)
-	if err != nil {
-		return nil, fmt.Errorf("error initializing change stream watcher: %w", err)
-	}
-
-	// Get the HealthEventStore for document operations
-	healthEventStore := ds.HealthEventStore()
 
 	reconcilerCfg := reconciler.ReconcilerConfig{
 		DataStoreConfig:    *datastoreConfig,
@@ -149,4 +96,83 @@ func InitializeAll(
 		FaultRemediationReconciler: reconciler.NewFaultRemediationReconciler(
 			ds, watcherInstance, healthEventStore, reconcilerCfg, params.DryRun),
 	}, nil
+}
+
+func loadTokenConfigAndPipeline() (storeconfig.TokenConfig, datastore.Pipeline, error) {
+	tokenConfig, err := storeconfig.TokenConfigFromEnv("fault-remediation")
+	if err != nil {
+		return storeconfig.TokenConfig{}, nil, fmt.Errorf("failed to load token configuration: %w", err)
+	}
+	builder := client.GetPipelineBuilder()
+	pipeline := builder.BuildQuarantinedAndDrainedNodesPipeline()
+	return tokenConfig, pipeline, nil
+}
+
+func loadAndValidateToml(tomlConfigPath string) (config.TomlConfig, error) {
+	var tomlConfig config.TomlConfig
+	if err := configmanager.LoadTOMLConfig(tomlConfigPath, &tomlConfig); err != nil {
+		return config.TomlConfig{}, fmt.Errorf("error while loading the toml Config: %w", err)
+	}
+	if err := tomlConfig.Validate(); err != nil {
+		return config.TomlConfig{}, fmt.Errorf("configuration validation failed: %w", err)
+	}
+	return tomlConfig, nil
+}
+
+func logInitMode(params InitializationParams) {
+	if params.DryRun {
+		slog.Info("Running in dry-run mode")
+	}
+	if params.EnableLogCollector {
+		slog.Info("Log collector enabled")
+	}
+}
+
+func initRemediationClientAndStateManager(
+	restConfig *rest.Config,
+	tomlConfig config.TomlConfig,
+	ctrlruntimeClient ctrlruntimeClient.Client,
+	dryRun bool,
+) (*remediation.Client, *statemanager.StateManager, error) {
+	remediationClient, err := remediation.NewRemediationClient(ctrlruntimeClient, dryRun, tomlConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error while initializing remediation client: %w", err)
+	}
+	kubeClient, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error init kube client for state manager: %w", err)
+	}
+	stateManager := statemanager.NewStateManager(kubeClient)
+	slog.Info("Successfully initialized client")
+	return remediationClient, stateManager, nil
+}
+
+func initDatastoreAndWatcher(
+	ctx context.Context,
+	tokenConfig storeconfig.TokenConfig,
+	pipeline datastore.Pipeline,
+) (datastore.DataStore, datastore.ChangeStreamWatcher, datastore.HealthEventStore, *datastore.DataStoreConfig, client.TokenConfig, error) {
+	datastoreConfig, err := datastore.LoadDatastoreConfig()
+	if err != nil {
+		return nil, nil, nil, nil, client.TokenConfig{}, fmt.Errorf("failed to load datastore configuration: %w", err)
+	}
+	clientTokenConfig := client.TokenConfig{
+		ClientName:      tokenConfig.ClientName,
+		TokenDatabase:   tokenConfig.TokenDatabase,
+		TokenCollection: tokenConfig.TokenCollection,
+	}
+	ds, err := datastore.NewDataStore(ctx, *datastoreConfig)
+	if err != nil {
+		return nil, nil, nil, nil, client.TokenConfig{}, fmt.Errorf("error initializing datastore: %w", err)
+	}
+	watcherConfig := watcher.WatcherConfig{
+		Pipeline:       pipeline,
+		CollectionName: "HealthEvents",
+	}
+	watcherInstance, err := watcher.CreateChangeStreamWatcher(ctx, ds, watcherConfig)
+	if err != nil {
+		return nil, nil, nil, nil, client.TokenConfig{}, fmt.Errorf("error initializing change stream watcher: %w", err)
+	}
+	healthEventStore := ds.HealthEventStore()
+	return ds, watcherInstance, healthEventStore, datastoreConfig, clientTokenConfig, nil
 }

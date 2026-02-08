@@ -111,37 +111,41 @@ func (p *Processor) inheritState(ctx context.Context, event *model.MaintenanceEv
 }
 
 // inheritPendingToOngoing inherits fields from a prior PENDING event.
-//
-//nolint:cyclop
 func (p *Processor) inheritPendingToOngoing(ctx context.Context, event *model.MaintenanceEvent) {
+	prior, ok := p.findPriorPendingEvent(ctx, event)
+	if !ok {
+		return
+	}
+	applyPendingInheritance(event, prior)
+}
+
+func (p *Processor) findPriorPendingEvent(ctx context.Context, event *model.MaintenanceEvent) (*model.MaintenanceEvent, bool) {
 	prior, found, err := p.store.FindLatestActiveEventByNodeAndType(
 		ctx, event.NodeName, event.MaintenanceType, []model.InternalStatus{model.StatusDetected})
 	if err != nil {
 		slog.Warn("Error finding prior PENDING for event",
 			"eventID", event.EventID,
 			"error", err)
-
-		return
+		return nil, false
 	}
-
 	if !found || prior == nil {
-		return
+		return nil, false
 	}
+	return prior, true
+}
 
+func applyPendingInheritance(event, prior *model.MaintenanceEvent) {
 	if prior.ScheduledStartTime != nil {
 		event.ScheduledStartTime = prior.ScheduledStartTime
 	}
-
 	if prior.ScheduledEndTime != nil {
 		event.ScheduledEndTime = prior.ScheduledEndTime
 	}
-
 	event.MaintenanceType = prior.MaintenanceType
 	if (event.ResourceID == "" || event.ResourceID == defaultUnknown) && prior.ResourceID != "" &&
 		prior.ResourceID != defaultUnknown {
 		event.ResourceID = prior.ResourceID
 	}
-
 	if (event.ResourceType == "" || event.ResourceType == defaultUnknown) && prior.ResourceType != "" &&
 		prior.ResourceType != defaultUnknown {
 		event.ResourceType = prior.ResourceType
@@ -149,27 +153,29 @@ func (p *Processor) inheritPendingToOngoing(ctx context.Context, event *model.Ma
 }
 
 // inheritOngoingToCompleted inherits fields from a prior ONGOING event.
-//
-//nolint:cyclop
 func (p *Processor) inheritOngoingToCompleted(ctx context.Context, event *model.MaintenanceEvent) {
 	slog.Info(
 		"[Processor.inheritOngoingToCompleted] Processing COMPLETED event, attempting to find latest ONGOING for node",
-		"completedEventID",
-		event.EventID,
-		"nodeName",
-		event.NodeName,
+		"completedEventID", event.EventID,
+		"nodeName", event.NodeName,
 	)
 
+	priorEvent, ok := p.findPriorOngoingEvent(ctx, event)
+	if !ok {
+		return
+	}
+	applyOngoingInheritance(event, priorEvent)
+}
+
+func (p *Processor) findPriorOngoingEvent(ctx context.Context, event *model.MaintenanceEvent) (*model.MaintenanceEvent, bool) {
 	priorEvent, found, err := p.store.FindLatestOngoingEventByNode(ctx, event.NodeName)
 	if err != nil {
 		slog.Warn("[inheritOngoingToCompleted] Error finding prior ONGOING event for COMPLETED event; no inheritance applied",
 			"eventID", event.EventID,
 			"node", event.NodeName,
 			"error", err)
-
-		return
+		return nil, false
 	}
-
 	if !found || priorEvent == nil {
 		slog.Warn(
 			"[inheritOngoingToCompleted] No prior ONGOING event found for COMPLETED event"+
@@ -177,10 +183,12 @@ func (p *Processor) inheritOngoingToCompleted(ctx context.Context, event *model.
 			"eventID", event.EventID,
 			"nodeName", event.NodeName,
 		)
-
-		return
+		return nil, false
 	}
+	return priorEvent, true
+}
 
+func applyOngoingInheritance(event, priorEvent *model.MaintenanceEvent) {
 	slog.Info("COMPLETED event before inheritance",
 		"eventID", event.EventID,
 		"maintenanceType", event.MaintenanceType,
@@ -194,26 +202,20 @@ func (p *Processor) inheritOngoingToCompleted(ctx context.Context, event *model.
 		"actualStart", safeFormatTime(priorEvent.ActualStartTime),
 	)
 
-	// Inherit from the found prior ONGOING event
-	event.MaintenanceType = priorEvent.MaintenanceType // Take the type from the ONGOING event
-
+	event.MaintenanceType = priorEvent.MaintenanceType
 	if priorEvent.ScheduledStartTime != nil {
 		event.ScheduledStartTime = priorEvent.ScheduledStartTime
 	}
-
 	if priorEvent.ScheduledEndTime != nil {
 		event.ScheduledEndTime = priorEvent.ScheduledEndTime
 	}
-
 	if priorEvent.ActualStartTime != nil {
 		event.ActualStartTime = priorEvent.ActualStartTime
 	}
-
 	if (event.ResourceID == "" || event.ResourceID == defaultUnknown) &&
 		(priorEvent.ResourceID != "" && priorEvent.ResourceID != defaultUnknown) {
 		event.ResourceID = priorEvent.ResourceID
 	}
-
 	if (event.ResourceType == "" || event.ResourceType == defaultUnknown) &&
 		(priorEvent.ResourceType != "" && priorEvent.ResourceType != defaultUnknown) {
 		event.ResourceType = priorEvent.ResourceType

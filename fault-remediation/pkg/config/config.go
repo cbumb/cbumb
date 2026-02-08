@@ -141,46 +141,67 @@ not a use-case for it.
 Additionally, the ImpactedEntityScope must be included in EntityTypeToResourceNames (meaning that partial draining is
 enabled for that entity).
 */
-// nolint:cyclop
 func (c *TomlConfig) validateEquivalenceGroup(actionName string, resource MaintenanceResource) error {
+	if err := validateEquivalenceGroupNotEmpty(actionName, resource); err != nil {
+		return err
+	}
+	if err := c.validateSupersedingEquivalenceGroups(resource); err != nil {
+		return err
+	}
+	if err := validateImpactedEntityScope(actionName, resource); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateEquivalenceGroupNotEmpty(actionName string, resource MaintenanceResource) error {
 	if len(resource.EquivalenceGroup) == 0 {
 		return fmt.Errorf("action '%s' must have a non-empty EquivalenceGroup", actionName)
 	}
+	return nil
+}
 
+func (c *TomlConfig) validateSupersedingEquivalenceGroups(resource MaintenanceResource) error {
 	for _, group := range resource.SupersedingEquivalenceGroups {
-		foundGroup := false
-
-		for _, maintenanceResource := range c.RemediationActions {
-			if group == maintenanceResource.EquivalenceGroup {
-				if len(maintenanceResource.ImpactedEntityScope) != 0 {
-					return fmt.Errorf("supersedingEquivalenceGroup %s cannot have an impactedEntityScopes: %s",
-						maintenanceResource.EquivalenceGroup, maintenanceResource.ImpactedEntityScope)
-				}
-
-				foundGroup = true
-			}
-		}
-
-		if !foundGroup {
-			return fmt.Errorf("superseding EquivalenceGroup %s must be defined in config", group)
-		}
-
-		if group == resource.EquivalenceGroup {
-			return fmt.Errorf("SupersedingEquivalenceGroup cannot include the EquivalenceGroup itself: %s", group)
+		if err := c.validateOneSupersedingGroup(resource, group); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	if len(resource.ImpactedEntityScope) != 0 {
-		if actionName != protos.RecommendedAction_COMPONENT_RESET.String() {
-			return fmt.Errorf("action '%s' cannot have an ImpactedEntityScope defined", actionName)
+func (c *TomlConfig) validateOneSupersedingGroup(resource MaintenanceResource, group string) error {
+	var foundGroup bool
+	for _, maintenanceResource := range c.RemediationActions {
+		if group != maintenanceResource.EquivalenceGroup {
+			continue
 		}
-
-		if _, ok := model.EntityTypeToResourceNames[resource.ImpactedEntityScope]; !ok {
-			return fmt.Errorf("impacted entity for action does not support partial draining: %s",
-				resource.ImpactedEntityScope)
+		if len(maintenanceResource.ImpactedEntityScope) != 0 {
+			return fmt.Errorf("supersedingEquivalenceGroup %s cannot have an impactedEntityScopes: %s",
+				maintenanceResource.EquivalenceGroup, maintenanceResource.ImpactedEntityScope)
 		}
+		foundGroup = true
 	}
+	if !foundGroup {
+		return fmt.Errorf("superseding EquivalenceGroup %s must be defined in config", group)
+	}
+	if group == resource.EquivalenceGroup {
+		return fmt.Errorf("SupersedingEquivalenceGroup cannot include the EquivalenceGroup itself: %s", group)
+	}
+	return nil
+}
 
+func validateImpactedEntityScope(actionName string, resource MaintenanceResource) error {
+	if len(resource.ImpactedEntityScope) == 0 {
+		return nil
+	}
+	if actionName != protos.RecommendedAction_COMPONENT_RESET.String() {
+		return fmt.Errorf("action '%s' cannot have an ImpactedEntityScope defined", actionName)
+	}
+	if _, ok := model.EntityTypeToResourceNames[resource.ImpactedEntityScope]; !ok {
+		return fmt.Errorf("impacted entity for action does not support partial draining: %s",
+			resource.ImpactedEntityScope)
+	}
 	return nil
 }
 

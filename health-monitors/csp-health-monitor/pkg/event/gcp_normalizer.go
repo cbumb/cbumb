@@ -355,46 +355,59 @@ func updateEventFromAuditLog(
 	return
 }
 
-//nolint:cyclop
 func finalizeEventStatus(event *model.MaintenanceEvent, methodName string, entryInsertID string) {
 	switch event.CSPStatus {
 	case model.CSPStatusPending:
 		event.Status = model.StatusDetected
 	case model.CSPStatusOngoing, model.CSPStatusActive:
-		event.Status = model.StatusMaintenanceOngoing
-		if event.ActualStartTime == nil { // If ActualStartTime is not set yet
-			now := time.Now().UTC()
-			event.ActualStartTime = &now // Set to current time when ONGOING/ACTIVE is first observed
-		}
+		finalizeOngoingOrActive(event)
 	case model.CSPStatusCompleted:
-		event.Status = model.StatusMaintenanceComplete
-		if event.ActualEndTime == nil {
-			now := time.Now().UTC()
-			event.ActualEndTime = &now
-		}
+		finalizeCompleted(event)
 	case model.CSPStatusCancelled:
 		event.Status = model.StatusCancelled
 	case model.CSPStatusUnknown:
-		if event.Status == "" {
-			event.Status = model.StatusDetected
-		}
+		finalizeUnknownStatus(event, methodName, entryInsertID)
+	default:
+		finalizeDefaultStatus(event, methodName, entryInsertID)
+	}
+}
 
-		if isGCPMaintenanceMethod(methodName) {
-			slog.Debug("CSPStatus unknown for known maintenance method; using default internal status",
-				"cspStatus", event.CSPStatus,
-				"method", methodName,
-				"insertID", entryInsertID,
-				"defaultStatus", event.Status)
-		}
-	default: // Handles any other unexpected CSPStatus values
-		slog.Warn("Unexpected CSPStatus encountered; using default internal status",
+func finalizeOngoingOrActive(event *model.MaintenanceEvent) {
+	event.Status = model.StatusMaintenanceOngoing
+	if event.ActualStartTime == nil {
+		now := time.Now().UTC()
+		event.ActualStartTime = &now
+	}
+}
+
+func finalizeCompleted(event *model.MaintenanceEvent) {
+	event.Status = model.StatusMaintenanceComplete
+	if event.ActualEndTime == nil {
+		now := time.Now().UTC()
+		event.ActualEndTime = &now
+	}
+}
+
+func finalizeUnknownStatus(event *model.MaintenanceEvent, methodName string, entryInsertID string) {
+	if event.Status == "" {
+		event.Status = model.StatusDetected
+	}
+	if isGCPMaintenanceMethod(methodName) {
+		slog.Debug("CSPStatus unknown for known maintenance method; using default internal status",
 			"cspStatus", event.CSPStatus,
 			"method", methodName,
 			"insertID", entryInsertID,
-			"defaultStatus", model.StatusDetected)
+			"defaultStatus", event.Status)
+	}
+}
 
-		if event.Status == "" { // Ensure internal status is at least Detected
-			event.Status = model.StatusDetected
-		}
+func finalizeDefaultStatus(event *model.MaintenanceEvent, methodName string, entryInsertID string) {
+	slog.Warn("Unexpected CSPStatus encountered; using default internal status",
+		"cspStatus", event.CSPStatus,
+		"method", methodName,
+		"insertID", entryInsertID,
+		"defaultStatus", model.StatusDetected)
+	if event.Status == "" {
+		event.Status = model.StatusDetected
 	}
 }
