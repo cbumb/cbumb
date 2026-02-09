@@ -58,8 +58,6 @@ func NewSyslogMonitor(
 }
 
 // NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with a specific journal factory
-//
-//nolint:cyclop
 func NewSyslogMonitorWithFactory(
 	nodeName string,
 	checks []CheckDefinition,
@@ -73,13 +71,11 @@ func NewSyslogMonitorWithFactory(
 	metadataPath string,
 	processingStrategy pb.ProcessingStrategy,
 ) (*SyslogMonitor, error) {
-	// Load state from file
 	state, err := loadState(stateFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load state: %w", err)
 	}
 
-	// Get current boot ID
 	currentBootID, err := fetchCurrentBootID()
 	if err != nil {
 		slog.Warn("Failed to get current boot ID", "error", err)
@@ -104,43 +100,12 @@ func NewSyslogMonitorWithFactory(
 	}
 
 	for _, check := range checks {
-		switch check.Name {
-		case XIDErrorCheck:
-			xidHandler, err := xid.NewXIDHandler(nodeName,
-				defaultAgentName, defaultComponentClass, check.Name, xidAnalyserEndpoint, metadataPath, processingStrategy)
-			if err != nil {
-				slog.Error("Error initializing XID handler", "error", err.Error())
-				return nil, fmt.Errorf("failed to initialize XID handler: %w", err)
-			}
-
-			sm.checkToHandlerMap[check.Name] = xidHandler
-
-		case SXIDErrorCheck:
-			sxidHandler, err := sxid.NewSXIDHandler(
-				nodeName, defaultAgentName, defaultComponentClass, check.Name, metadataPath, processingStrategy)
-			if err != nil {
-				slog.Error("Error initializing SXID handler", "error", err.Error())
-				return nil, fmt.Errorf("failed to initialize SXID handler: %w", err)
-			}
-
-			sm.checkToHandlerMap[check.Name] = sxidHandler
-
-		case GPUFallenOffCheck:
-			gpuFallenHandler, err := gpufallen.NewGPUFallenHandler(
-				nodeName, defaultAgentName, defaultComponentClass, check.Name, processingStrategy)
-			if err != nil {
-				slog.Error("Error initializing GPU Fallen Off handler", "error", err.Error())
-				return nil, fmt.Errorf("failed to initialize GPU Fallen Off handler: %w", err)
-			}
-
-			sm.checkToHandlerMap[check.Name] = gpuFallenHandler
-
-		default:
-			slog.Error("Unsupported check", "check", check.Name)
+		if err := registerCheckHandler(sm, check, nodeName, defaultAgentName, defaultComponentClass,
+			xidAnalyserEndpoint, metadataPath, processingStrategy); err != nil {
+			return nil, err
 		}
 	}
 
-	// Handle boot ID changes (system reboot detection)
 	if err := sm.handleBootIDChange(state.BootID, currentBootID); err != nil {
 		return nil, fmt.Errorf("failed to handle boot ID change: %w", err)
 	}
@@ -148,6 +113,48 @@ func NewSyslogMonitorWithFactory(
 	slog.Info("SyslogMonitor initialized with persistent state. Each check will resume from last processed cursor.")
 
 	return sm, nil
+}
+
+func registerCheckHandler(
+	sm *SyslogMonitor,
+	check CheckDefinition,
+	nodeName, defaultAgentName, defaultComponentClass string,
+	xidAnalyserEndpoint, metadataPath string,
+	processingStrategy pb.ProcessingStrategy,
+) error {
+	switch check.Name {
+	case XIDErrorCheck:
+		h, err := xid.NewXIDHandler(nodeName, defaultAgentName, defaultComponentClass,
+			check.Name, xidAnalyserEndpoint, metadataPath, processingStrategy)
+		if err != nil {
+			slog.Error("Error initializing XID handler", "error", err.Error())
+			return fmt.Errorf("failed to initialize XID handler: %w", err)
+		}
+
+		sm.checkToHandlerMap[check.Name] = h
+	case SXIDErrorCheck:
+		h, err := sxid.NewSXIDHandler(nodeName, defaultAgentName, defaultComponentClass,
+			check.Name, metadataPath, processingStrategy)
+		if err != nil {
+			slog.Error("Error initializing SXID handler", "error", err.Error())
+			return fmt.Errorf("failed to initialize SXID handler: %w", err)
+		}
+
+		sm.checkToHandlerMap[check.Name] = h
+	case GPUFallenOffCheck:
+		h, err := gpufallen.NewGPUFallenHandler(nodeName, defaultAgentName, defaultComponentClass,
+			check.Name, processingStrategy)
+		if err != nil {
+			slog.Error("Error initializing GPU Fallen Off handler", "error", err.Error())
+			return fmt.Errorf("failed to initialize GPU Fallen Off handler: %w", err)
+		}
+
+		sm.checkToHandlerMap[check.Name] = h
+	default:
+		slog.Error("Unsupported check", "check", check.Name)
+	}
+
+	return nil
 }
 
 // Run executes all configured checks
