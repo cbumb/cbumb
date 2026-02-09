@@ -46,6 +46,17 @@ global:
   # Shared metadata path used by metadata-collector and syslog-health-monitor
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
 
+  # DCGM (Data Center GPU Manager) configuration
+  # Shared by gpu-health-monitor and preflight dcgm-diag
+  dcgm:
+    # Enable DCGM Kubernetes service integration
+    enabled: true
+    service:
+      # DCGM hostengine service endpoint
+      endpoint: "nvidia-dcgm.gpu-operator.svc"
+      # DCGM hostengine service port
+      port: 5555
+
   # Audit logging configuration
   auditLogging:
     enabled: false  # Enable/disable audit logging for all components

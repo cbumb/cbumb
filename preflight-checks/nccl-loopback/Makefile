@@ -1,7 +1,7 @@
-# preflight-checks/ping Makefile
+# NCCL Loopback Preflight Check Makefile
 # Individual module build and test targets
 
-# Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,10 +21,10 @@
 
 # Module type and capabilities
 IS_GO_MODULE := 1
-IS_KO_MODULE := 1
+HAS_DOCKER := 1
 
-# ping specific settings
-CLEAN_EXTRA_FILES := ping
+# nccl-loopback specific settings
+CLEAN_EXTRA_FILES := nccl-loopback-check
 
 # =============================================================================
 # INCLUDE SHARED DEFINITIONS
@@ -32,6 +32,7 @@ CLEAN_EXTRA_FILES := ping
 
 include ../../make/common.mk
 include ../../make/go.mk
+include ../../make/docker.mk
 
 # =============================================================================
 # DEFAULT TARGET
@@ -46,19 +47,13 @@ all: lint-test ## Run lint-test (default target)
 
 .PHONY: help
 help:
-	@echo "preflight-checks/ping Makefile - Using nvsentinel make/*.mk standards"
+	@echo "NCCL Loopback Preflight Check - Using nvsentinel make/*.mk standards"
 	@echo ""
-	@echo "Main targets: all, lint-test, ci-test, build, test, lint, clean"
-	@echo "Ko targets: ko-build, ko-publish"
-	@echo ""
-	@echo "Build notes:"
-	@echo "  - Container images are built using ko"
-	@echo "  - Use 'make ko-build' for local builds (KO_DOCKER_REPO=ko.local by default)"
-	@echo "  - Use 'make ko-publish' to build and push (set KO_DOCKER_REPO and VERSION)"
-
-# =============================================================================
-# MODULE NOTES
-# =============================================================================
-# This is a minimal preflight check that simply logs success and exits.
-# Used as a basic health/connectivity verification.
-# Run 'make help' to see all available targets and build instructions.
+	@echo "Main targets:"
+	@echo "  all            - Run lint-test (default)"
+	@echo "  build          - Build Go binary"
+	@echo "  test           - Run tests"
+	@echo "  lint           - Run linter"
+	@echo "  docker-build   - Build Docker image"
+	@echo "  docker-publish - Push Docker image to registry"
+	@echo "  clean          - Clean build artifacts"
