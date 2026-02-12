@@ -51,6 +51,7 @@ const (
 	jobMetricsAlreadyCountedAnnotation = "dgxc.nvidia.com/logcollector-metrics-recorded"
 	trueStringVal                      = "true"
 	controllerRequeueDuration          = 10 * time.Second
+	labelValueCharactersLimit          = 63
 
 	// Environment variable names
 	LogCollectorManifestPathEnv = "LOG_COLLECTOR_MANIFEST_PATH"
