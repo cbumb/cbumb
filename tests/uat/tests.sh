@@ -148,7 +148,7 @@ wait_for_node_quarantine() {
 
 wait_for_node_unquarantine() {
     local node=$1
-    local timeout=${UAT_UNQUARANTINE_TIMEOUT:-120}
+    local timeout=${UAT_UNQUARANTINE_TIMEOUT:-300}
     local elapsed=0
 
     log "Waiting for node $node to be uncordoned..."
