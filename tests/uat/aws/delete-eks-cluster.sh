@@ -39,7 +39,7 @@ main() {
         local stacks
         stacks=$(aws cloudformation list-stacks \
             --region "$AWS_REGION" \
-            --query "StackSummaries[?starts_with(StackName, 'eksctl-${CLUSTER_PREFIX}') && StackStatus!='DELETE_COMPLETE'].StackName" \
+            --query "StackSummaries[?starts_with(StackName, 'eksctl-${CLUSTER_PREFIX}-') && StackStatus!='DELETE_COMPLETE'].StackName" \
             --output text)
 
         if [ -z "$stacks" ]; then
@@ -58,20 +58,30 @@ main() {
     log "Clusters to clean up: $cluster_names"
 
     # Clean up each cluster
+    local failed=0
     for cluster_name in $cluster_names; do
         log "========================================="
         log "Cleaning up cluster: $cluster_name"
         log "========================================="
 
         # Step 1: Delete OIDC provider (before cluster is gone)
-        delete_oidc_provider "$cluster_name"
+        delete_oidc_provider "$cluster_name" || {
+            log "WARNING: OIDC cleanup failed for $cluster_name; continuing with stack deletion"
+            failed=1
+        }
 
         # Step 2: Delete CloudFormation stacks and GPU subnets in dependency order
         # (nodegroups first, then GPU subnets, then addons, then cluster/VPC)
-        delete_cluster_stacks "$cluster_name"
+        if ! delete_cluster_stacks "$cluster_name"; then
+            failed=1
+        fi
     done
 
     log "========================================="
+    if [ "$failed" -ne 0 ]; then
+        log "Cluster cleanup completed with errors"
+        exit 1
+    fi
     log "All cluster cleanups completed"
     log "========================================="
 }
@@ -97,7 +107,7 @@ get_cluster_names_from_stacks() {
     done
 
     # Return unique names
-    echo "$cluster_names" | tr ' ' '\n' | sort -u | tr '\n' ' '
+    echo "$cluster_names" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ' | sed 's/ $//'
 }
 
 # Delete the IAM OIDC provider associated with an EKS cluster.
@@ -132,7 +142,10 @@ delete_oidc_provider() {
     local provider_arn
     provider_arn=$(aws iam list-open-id-connect-providers \
         --query "OpenIDConnectProviderList[?ends_with(Arn, '/${oidc_id}')].Arn" \
-        --output text 2>/dev/null) || true
+        --output text 2>/dev/null) || {
+        log "WARNING: Failed to list OIDC providers when looking for issuer $oidc_issuer"
+        return 0
+    }
 
     if [[ -z "$provider_arn" || "$provider_arn" == "None" ]]; then
         log "No OIDC provider found matching issuer: $oidc_issuer"
@@ -174,6 +187,21 @@ delete_orphaned_oidc_providers() {
         return 1
     }
 
+    # Precompute OIDC IDs for all active clusters to avoid repeated API calls
+    local active_oidc_ids=""
+    for cluster in $active_clusters; do
+        local cluster_oidc
+        cluster_oidc=$(aws eks describe-cluster \
+            --name "$cluster" \
+            --region "$AWS_REGION" \
+            --query 'cluster.identity.oidc.issuer' \
+            --output text 2>/dev/null) || continue
+
+        if [ -n "$cluster_oidc" ] && [ "$cluster_oidc" != "None" ]; then
+            active_oidc_ids="${active_oidc_ids} ${cluster_oidc##*/}"
+        fi
+    done
+
     for arn in $provider_arns; do
         # EKS OIDC providers have URLs like: oidc.eks.{region}.amazonaws.com/id/{ID}
         local provider_url
@@ -183,20 +211,12 @@ delete_orphaned_oidc_providers() {
             --output text 2>/dev/null) || continue
 
         if echo "$provider_url" | grep -q "oidc.eks.${AWS_REGION}.amazonaws.com"; then
-            # Check if this OIDC provider is associated with an active cluster
             local oidc_id
             oidc_id="${provider_url##*/}"
 
             local is_orphaned=true
-            for cluster in $active_clusters; do
-                local cluster_oidc
-                cluster_oidc=$(aws eks describe-cluster \
-                    --name "$cluster" \
-                    --region "$AWS_REGION" \
-                    --query 'cluster.identity.oidc.issuer' \
-                    --output text 2>/dev/null) || continue
-
-                if echo "$cluster_oidc" | grep -qF "$oidc_id"; then
+            for active_id in $active_oidc_ids; do
+                if [ "$active_id" = "$oidc_id" ]; then
                     is_orphaned=false
                     break
                 fi
@@ -222,10 +242,10 @@ delete_cluster_stacks() {
     local all_stacks
     all_stacks=$(aws cloudformation list-stacks \
         --region "$AWS_REGION" \
-        --query "StackSummaries[?starts_with(StackName, 'eksctl-${cluster_name}') && StackStatus!='DELETE_COMPLETE'].StackName" \
+        --query "StackSummaries[?starts_with(StackName, 'eksctl-${cluster_name}-') && StackStatus!='DELETE_COMPLETE'].StackName" \
         --output text 2>/dev/null) || {
         log "WARNING: Could not list stacks for cluster $cluster_name"
-        return 0
+        return 1
     }
 
     if [ -z "$all_stacks" ]; then
@@ -241,14 +261,14 @@ delete_cluster_stacks() {
 
     for stack in $all_stacks; do
         case "$stack" in
+            *-cluster)
+                cluster_stack="$stack"
+                ;;
             *-nodegroup-*)
                 nodegroup_stacks="${nodegroup_stacks} ${stack}"
                 ;;
             *-addon-*)
                 addon_stacks="${addon_stacks} ${stack}"
-                ;;
-            *-cluster)
-                cluster_stack="$stack"
                 ;;
             *)
                 addon_stacks="${addon_stacks} ${stack}"
@@ -256,29 +276,44 @@ delete_cluster_stacks() {
         esac
     done
 
+    local failed=0
+
     # Phase 1: nodegroup stacks (must be deleted before GPU subnets or cluster stack)
     if [ -n "$nodegroup_stacks" ]; then
         log "Phase 1: Deleting nodegroup stacks..."
-        delete_stacks_and_wait "$nodegroup_stacks"
+        if ! delete_stacks_and_wait "$nodegroup_stacks"; then
+            log "WARNING: One or more nodegroup stack deletions failed for cluster $cluster_name"
+            failed=1
+        fi
     fi
 
     # Phase 2: GPU subnets (safe now that nodegroup instances are terminated,
     # must happen before cluster stack deletes the VPC)
-    delete_gpu_subnets "$cluster_name"
+    if ! delete_gpu_subnets "$cluster_name"; then
+        log "WARNING: GPU subnet cleanup had failures for cluster $cluster_name"
+        failed=1
+    fi
 
     # Phase 3: addon/IAM stacks
     if [ -n "$addon_stacks" ]; then
         log "Phase 3: Deleting addon/IAM stacks..."
-        delete_stacks_and_wait "$addon_stacks"
+        if ! delete_stacks_and_wait "$addon_stacks"; then
+            log "WARNING: One or more addon/IAM stack deletions failed for cluster $cluster_name"
+            failed=1
+        fi
     fi
 
     # Phase 4: cluster stack (must be last — deletes VPC)
     if [ -n "$cluster_stack" ]; then
         log "Phase 4: Deleting cluster stack..."
-        delete_stacks_and_wait "$cluster_stack"
+        if ! delete_stacks_and_wait "$cluster_stack"; then
+            log "WARNING: Cluster stack deletion failed for cluster $cluster_name"
+            failed=1
+        fi
     fi
 
     log "CloudFormation stack cleanup complete for cluster $cluster_name"
+    return "$failed"
 }
 
 # Delete manually-created GPU subnets for a cluster.
@@ -400,8 +435,10 @@ wait_for_eni_detach() {
 }
 
 # Delete a list of stacks and wait for all of them to finish.
+# Returns 0 if all succeeded, 1 if any failed.
 delete_stacks_and_wait() {
     local stacks="$1"
+    local failed=0
 
     if [ -z "$stacks" ]; then
         return 0
@@ -417,8 +454,12 @@ delete_stacks_and_wait() {
 
     # Wait for all to complete
     for stack in $stacks; do
-        wait_for_stack_deletion "$stack" || true
+        if ! wait_for_stack_deletion "$stack"; then
+            failed=1
+        fi
     done
+
+    return "$failed"
 }
 
 # Wait for a CloudFormation stack to finish deleting.
