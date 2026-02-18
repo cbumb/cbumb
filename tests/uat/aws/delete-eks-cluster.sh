@@ -83,16 +83,16 @@ get_cluster_names_from_stacks() {
     local stacks="$1"
     local cluster_names=""
 
+    # Stack names follow: eksctl-{CLUSTER}-cluster, eksctl-{CLUSTER}-nodegroup-{NG},
+    # eksctl-{CLUSTER}-addon-{ADDON}. We strip the eksctl- prefix and known
+    # suffixes. Using shortest-suffix parameter expansion (single %) so that
+    # cluster names containing "-nodegroup-" or "-addon-" are not truncated.
     for stack in $stacks; do
         local name
-        # Strip "eksctl-" prefix, then strip the last component (-cluster, -nodegroup-*, -addon-*)
         name="${stack#eksctl-}"
-        # Remove -cluster suffix
         name="${name%-cluster}"
-        # Remove -nodegroup-* suffix
-        name=$(echo "$name" | sed 's/-nodegroup-.*$//')
-        # Remove -addon-* suffix
-        name=$(echo "$name" | sed 's/-addon-.*$//')
+        name="${name%-nodegroup-*}"
+        name="${name%-addon-*}"
         cluster_names="${cluster_names} ${name}"
     done
 
@@ -151,6 +151,8 @@ delete_oidc_provider() {
 delete_orphaned_oidc_providers() {
     local cluster_name="$1"
 
+    log "Searching for orphaned OIDC providers (triggered by cluster: ${cluster_name})..."
+
     # List all OIDC providers and find ones associated with EKS in this region
     local provider_arns
     provider_arns=$(aws iam list-open-id-connect-providers \
@@ -160,12 +162,17 @@ delete_orphaned_oidc_providers() {
         return 0
     }
 
-    # Get list of active clusters once (avoid repeated API calls in the loop)
+    # Get list of active clusters once (avoid repeated API calls in the loop).
+    # If this fails, we must not proceed — an empty list would cause us to
+    # incorrectly treat every OIDC provider as orphaned and delete it.
     local active_clusters
     active_clusters=$(aws eks list-clusters \
         --region "$AWS_REGION" \
         --query 'clusters[]' \
-        --output text 2>/dev/null) || true
+        --output text 2>/dev/null) || {
+        log "ERROR: Failed to list active EKS clusters in ${AWS_REGION}; aborting orphaned OIDC cleanup to avoid deleting providers for active clusters"
+        return 1
+    }
 
     for arn in $provider_arns; do
         # EKS OIDC providers have URLs like: oidc.eks.{region}.amazonaws.com/id/{ID}
@@ -342,7 +349,7 @@ delete_gpu_subnets() {
                         --region "$AWS_REGION" \
                         --attachment-id "$attachment_id" \
                         --force 2>/dev/null || log "WARNING: Failed to detach ENI $eni_id"
-                    sleep 5
+                    wait_for_eni_detach "$eni_id"
                 fi
 
                 log "Deleting network interface: $eni_id"
@@ -359,6 +366,35 @@ delete_gpu_subnets() {
     done
 
     log "GPU subnet cleanup complete for cluster $cluster_name"
+}
+
+# Poll until an ENI has no attachment or reaches "available" status,
+# or until the timeout expires.
+wait_for_eni_detach() {
+    local eni_id="$1"
+    local timeout=60
+    local interval=5
+    local elapsed=0
+
+    while [ "$elapsed" -lt "$timeout" ]; do
+        local eni_status
+        eni_status=$(aws ec2 describe-network-interfaces \
+            --region "$AWS_REGION" \
+            --network-interface-ids "$eni_id" \
+            --query 'NetworkInterfaces[0].Status' \
+            --output text 2>/dev/null) || break
+
+        if [[ "$eni_status" == "available" || -z "$eni_status" || "$eni_status" == "None" ]]; then
+            return 0
+        fi
+
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+
+    if [ "$elapsed" -ge "$timeout" ]; then
+        log "WARNING: Timed out waiting for ENI $eni_id to detach after ${timeout}s; proceeding with delete attempt"
+    fi
 }
 
 # Delete a list of stacks and wait for all of them to finish.
@@ -410,7 +446,13 @@ wait_for_stack_deletion() {
                 return 0
                 ;;
             DELETE_FAILED)
-                log "WARNING: Stack $stack_name deletion failed"
+                local failure_reason
+                failure_reason=$(aws cloudformation describe-stack-events \
+                    --region "$AWS_REGION" \
+                    --stack-name "$stack_name" \
+                    --query "StackEvents[?ResourceStatus=='DELETE_FAILED'] | [0].ResourceStatusReason" \
+                    --output text 2>/dev/null) || failure_reason="<unable to retrieve>"
+                log "WARNING: Stack $stack_name deletion failed: ${failure_reason}"
                 return 1
                 ;;
             DELETE_IN_PROGRESS)
