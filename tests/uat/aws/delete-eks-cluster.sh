@@ -95,8 +95,10 @@ get_cluster_names_from_stacks() {
 
     # Stack names follow: eksctl-{CLUSTER}-cluster, eksctl-{CLUSTER}-nodegroup-{NG},
     # eksctl-{CLUSTER}-addon-{ADDON}. We strip the eksctl- prefix and known
-    # suffixes. Using shortest-suffix parameter expansion (single %) so that
-    # cluster names containing "-nodegroup-" or "-addon-" are not truncated.
+    # suffixes. Note: shortest-suffix removal (single %) will still truncate
+    # cluster names that themselves contain "-nodegroup-" or "-addon-"; this is
+    # safe in practice because NVSentinel cluster names never contain those
+    # substrings.
     for stack in $stacks; do
         local name
         name="${stack#eksctl-}"
@@ -191,15 +193,21 @@ delete_orphaned_oidc_providers() {
     local active_oidc_ids=""
     for cluster in $active_clusters; do
         local cluster_oidc
-        cluster_oidc=$(aws eks describe-cluster \
+        if ! cluster_oidc=$(aws eks describe-cluster \
             --name "$cluster" \
             --region "$AWS_REGION" \
             --query 'cluster.identity.oidc.issuer' \
-            --output text 2>/dev/null) || continue
-
-        if [ -n "$cluster_oidc" ] && [ "$cluster_oidc" != "None" ]; then
-            active_oidc_ids="${active_oidc_ids} ${cluster_oidc##*/}"
+            --output text 2>/dev/null); then
+            log "ERROR: Failed to describe cluster '${cluster}' in ${AWS_REGION}; aborting orphaned OIDC cleanup to avoid deleting providers for active clusters"
+            return 1
         fi
+
+        if [ -z "$cluster_oidc" ] || [ "$cluster_oidc" = "None" ]; then
+            log "ERROR: Could not obtain OIDC issuer for cluster '${cluster}' in ${AWS_REGION}; aborting orphaned OIDC cleanup to avoid deleting providers for active clusters"
+            return 1
+        fi
+
+        active_oidc_ids="${active_oidc_ids} ${cluster_oidc##*/}"
     done
 
     for arn in $provider_arns; do
@@ -321,6 +329,7 @@ delete_cluster_stacks() {
 # Called by: delete_cluster_stacks() — Phase 2
 delete_gpu_subnets() {
     local cluster_name="$1"
+    local exit_code=0
 
     log "Cleaning up GPU subnets for cluster: $cluster_name..."
 
@@ -332,7 +341,7 @@ delete_gpu_subnets() {
         --query 'Subnets[].SubnetId' \
         --output text 2>/dev/null) || {
         log "WARNING: Could not query subnets for cluster $cluster_name"
-        return 0
+        return 1
     }
 
     if [[ -z "$subnet_ids" || "$subnet_ids" == "None" ]]; then
@@ -354,9 +363,12 @@ delete_gpu_subnets() {
         for assoc_id in $associations; do
             if [[ -n "$assoc_id" && "$assoc_id" != "None" ]]; then
                 log "Disassociating route table: $assoc_id"
-                aws ec2 disassociate-route-table \
+                if ! aws ec2 disassociate-route-table \
                     --region "$AWS_REGION" \
-                    --association-id "$assoc_id" 2>/dev/null || log "WARNING: Failed to disassociate route table $assoc_id"
+                    --association-id "$assoc_id" 2>/dev/null; then
+                    log "WARNING: Failed to disassociate route table $assoc_id"
+                    exit_code=1
+                fi
             fi
         done
 
@@ -380,27 +392,39 @@ delete_gpu_subnets() {
 
                 if [[ -n "$attachment_id" && "$attachment_id" != "None" ]]; then
                     log "Detaching network interface: $eni_id (attachment: $attachment_id)"
-                    aws ec2 detach-network-interface \
+                    if ! aws ec2 detach-network-interface \
                         --region "$AWS_REGION" \
                         --attachment-id "$attachment_id" \
-                        --force 2>/dev/null || log "WARNING: Failed to detach ENI $eni_id"
-                    wait_for_eni_detach "$eni_id"
+                        --force 2>/dev/null; then
+                        log "WARNING: Failed to detach ENI $eni_id"
+                        exit_code=1
+                    fi
+                    if ! wait_for_eni_detach "$eni_id"; then
+                        exit_code=1
+                    fi
                 fi
 
                 log "Deleting network interface: $eni_id"
-                aws ec2 delete-network-interface \
+                if ! aws ec2 delete-network-interface \
                     --region "$AWS_REGION" \
-                    --network-interface-id "$eni_id" 2>/dev/null || log "WARNING: Failed to delete ENI $eni_id"
+                    --network-interface-id "$eni_id" 2>/dev/null; then
+                    log "WARNING: Failed to delete ENI $eni_id"
+                    exit_code=1
+                fi
             fi
         done
 
         # Delete the subnet
-        aws ec2 delete-subnet \
+        if ! aws ec2 delete-subnet \
             --region "$AWS_REGION" \
-            --subnet-id "$subnet_id" || log "WARNING: Failed to delete subnet $subnet_id"
+            --subnet-id "$subnet_id"; then
+            log "WARNING: Failed to delete subnet $subnet_id"
+            exit_code=1
+        fi
     done
 
     log "GPU subnet cleanup complete for cluster $cluster_name"
+    return "$exit_code"
 }
 
 # Poll until an ENI has no attachment or reaches "available" status,
