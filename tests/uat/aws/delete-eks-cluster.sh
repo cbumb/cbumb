@@ -93,7 +93,7 @@ get_cluster_names_from_stacks() {
         name="${name%-cluster}"
         name="${name%-nodegroup-*}"
         name="${name%-addon-*}"
-        cluster_names="${cluster_names} ${name}"
+        cluster_names="${cluster_names:+${cluster_names} }${name}"
     done
 
     # Return unique names
@@ -116,7 +116,7 @@ delete_oidc_provider() {
         --output text 2>/dev/null) || {
         log "WARNING: Could not describe cluster $cluster_name (may already be deleted). Searching for orphaned OIDC providers..."
         delete_orphaned_oidc_providers "$cluster_name"
-        return 0
+        return $?
     }
 
     if [[ -z "$oidc_issuer" || "$oidc_issuer" == "None" ]]; then
@@ -395,6 +395,8 @@ wait_for_eni_detach() {
     if [ "$elapsed" -ge "$timeout" ]; then
         log "WARNING: Timed out waiting for ENI $eni_id to detach after ${timeout}s; proceeding with delete attempt"
     fi
+
+    return 0
 }
 
 # Delete a list of stacks and wait for all of them to finish.
