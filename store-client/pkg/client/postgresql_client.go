@@ -20,7 +20,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	_ "github.com/lib/pq" // PostgreSQL driver
@@ -48,9 +50,12 @@ const (
 	frameBoundCurrentRow = "CURRENT ROW"
 )
 
-var comparisonOps = map[string]string{
-	"$gte": ">=", "$gt": ">", opLTE: "<=", "$lt": "<", opEQ: "=", "$ne": "!=",
-}
+var (
+	comparisonOps = map[string]string{
+		"$gte": ">=", "$gt": ">", opLTE: "<=", "$lt": "<", opEQ: "=", "$ne": "!=",
+	}
+	paramRegex = regexp.MustCompile(`\$(\d+)`)
+)
 
 // PostgreSQLClient implements DatabaseClient for PostgreSQL
 type PostgreSQLClient struct {
@@ -230,6 +235,17 @@ func (c *PostgreSQLClient) UpdateDocumentStatus(
 ) error {
 	// Build the JSONB path for the status field
 	parts := strings.Split(statusPath, ".")
+
+	for _, part := range parts {
+		if !isValidFieldName(part) {
+			return datastore.NewValidationError(
+				datastore.ProviderPostgreSQL,
+				fmt.Sprintf("status path segment contains invalid characters: %s", part),
+				nil,
+			)
+		}
+	}
+
 	jsonbPath := "{" + strings.Join(parts, ",") + "}"
 
 	// Marshal status value to JSON
@@ -844,7 +860,15 @@ func (c *PostgreSQLClient) buildLogicalExpr(mongoOp, sqlOp string, value interfa
 
 func (c *PostgreSQLClient) buildInExpr(value interface{}) (string, error) {
 	inArray, ok := value.([]interface{})
-	if !ok || len(inArray) != 2 {
+	if !ok {
+		return "", datastore.NewValidationError(
+			datastore.ProviderPostgreSQL,
+			"$in operator expects an array",
+			fmt.Errorf("got type %T", value),
+		)
+	}
+
+	if len(inArray) != 2 {
 		return "", datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
 			"$in operator must have exactly 2 operands [field, array]",
@@ -1827,6 +1851,14 @@ func (b *aggregationQueryBuilder) processCount(value interface{}) error {
 		)
 	}
 
+	if !isValidFieldName(countField) {
+		return datastore.NewValidationError(
+			datastore.ProviderPostgreSQL,
+			fmt.Sprintf("$count field name contains invalid characters: %s", countField),
+			nil,
+		)
+	}
+
 	b.isCount = true
 	b.countField = countField
 
@@ -2086,8 +2118,11 @@ func (b *aggregationQueryBuilder) buildPostCountFilter(countQuery string) string
 
 // buildPostCountCondition builds a single condition for filtering count results
 func (b *aggregationQueryBuilder) buildPostCountCondition(field string, value interface{}) string {
-	// The count result is stored as document->>'field'
-	// We need to cast it to a number for comparison
+	if !isValidFieldName(field) {
+		slog.Warn("Skipping post-count condition with invalid field name", "field", field)
+		return ""
+	}
+
 	fieldPath := fmt.Sprintf("(document->>'%s')::bigint", field)
 
 	switch v := value.(type) {
@@ -2155,6 +2190,11 @@ func (b *aggregationQueryBuilder) buildGroupQuery() string {
 	for fieldName, fieldExpr := range b.groupBy {
 		if fieldName == "_id" {
 			continue // Already handled
+		}
+
+		if !isValidFieldName(fieldName) {
+			slog.Warn("Skipping $group field with invalid name", "field", fieldName)
+			continue
 		}
 
 		// Check if it's a $sum operator
@@ -2409,17 +2449,14 @@ func (c *PostgreSQLClient) adjustParameterNumbers(clause string, offset int) str
 		return clause
 	}
 
-	// Replace parameter placeholders: $1 → $N, $2 → $N+1, etc.
-	// This is a simple implementation; for production, use a more robust parser
-	result := clause
+	return paramRegex.ReplaceAllStringFunc(clause, func(match string) string {
+		num, err := strconv.Atoi(match[1:])
+		if err != nil {
+			return match
+		}
 
-	for i := 20; i >= 1; i-- { // Process in reverse to avoid double replacement
-		oldParam := fmt.Sprintf("$%d", i)
-		newParam := fmt.Sprintf("$%d", i+offset)
-		result = strings.ReplaceAll(result, oldParam, newParam)
-	}
-
-	return result
+		return fmt.Sprintf("$%d", num+offset)
+	})
 }
 
 // buildUpdateClause converts MongoDB-style update operators to PostgreSQL SET clause
@@ -2729,10 +2766,24 @@ func validateTableName(name string) error {
 		return fmt.Errorf("table name cannot start with a digit: %c", firstRune)
 	}
 
+	if firstRune == '.' {
+		return fmt.Errorf("table name cannot start with a dot")
+	}
+
+	dotCount := 0
+
 	for _, r := range name {
 		if !isValidIdentifierChar(r) {
 			return fmt.Errorf("table name contains invalid character: %c", r)
 		}
+
+		if r == '.' {
+			dotCount++
+		}
+	}
+
+	if dotCount > 1 {
+		return fmt.Errorf("table name has too many dot separators (at most one for schema.table)")
 	}
 
 	return nil

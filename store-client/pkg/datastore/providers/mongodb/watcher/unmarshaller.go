@@ -89,7 +89,10 @@ func CreateBsonTaggedStructType(typ reflect.Type) reflect.Type {
 	return reflect.StructOf(fields)
 }
 
-// CopyStructFields copies values from one struct to another based on matching field names
+// CopyStructFields copies values from one struct to another based on matching field names.
+// NOTE: copyFieldValue is intentionally duplicated in
+// pkg/storewatcher/unmarshaller.go to avoid a shared dependency between
+// these two independent packages.
 func CopyStructFields(dst, src reflect.Value) {
 	dstType := dst.Type()
 
@@ -120,7 +123,7 @@ func copyFieldValue(dstField, srcField reflect.Value) {
 			return
 		}
 
-		dstField.Set(srcField)
+		safeSet(dstField, srcField)
 
 		return
 	}
@@ -131,7 +134,15 @@ func copyFieldValue(dstField, srcField reflect.Value) {
 	}
 
 	if dstField.Kind() == srcField.Kind() {
-		dstField.Set(srcField)
+		safeSet(dstField, srcField)
+	}
+}
+
+func safeSet(dst, src reflect.Value) {
+	if src.Type().AssignableTo(dst.Type()) {
+		dst.Set(src)
+	} else if src.Type().ConvertibleTo(dst.Type()) {
+		dst.Set(src.Convert(dst.Type()))
 	}
 }
 
