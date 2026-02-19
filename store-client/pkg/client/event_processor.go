@@ -152,82 +152,92 @@ func (p *DefaultEventProcessor) processEvents(ctx context.Context) error {
 // handleSingleEvent processes a single event
 // IMPORTANT: Does NOT retry internally - handler is responsible for its own retries if needed
 // This prevents retry-induced blocking of the event stream
-//
-//nolint:nestif,cyclop // Complex error handling and event processing logic
 func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Event) error {
 	startTime := time.Now()
 
-	// Unmarshal the event
-	var healthEventWithStatus model.HealthEventWithStatus
-	if err := event.UnmarshalDocument(&healthEventWithStatus); err != nil {
+	healthEvent, eventID, err := p.extractEventData(ctx, event, startTime)
+	if err != nil {
+		return err
+	}
+
+	slog.Debug("Processing event", "eventID", eventID, "event", healthEvent)
+
+	if processErr := p.eventHandler.ProcessEvent(ctx, healthEvent); processErr != nil {
+		return p.handleProcessingFailure(ctx, eventID, processErr, startTime)
+	}
+
+	p.updateMetrics("processing_success", eventID, time.Since(startTime), true)
+
+	if err := p.markProcessed(ctx); err != nil {
+		p.updateMetrics("mark_processed_error", eventID, time.Since(startTime), false)
+
+		return fmt.Errorf("failed to mark event as processed: %w", err)
+	}
+
+	return nil
+}
+
+// extractEventData unmarshals the event and retrieves the document ID.
+// Non-recoverable errors are marked as processed to skip bad data.
+func (p *DefaultEventProcessor) extractEventData(
+	ctx context.Context, event Event, startTime time.Time,
+) (*model.HealthEventWithStatus, string, error) {
+	var healthEvent model.HealthEventWithStatus
+	if err := event.UnmarshalDocument(&healthEvent); err != nil {
 		p.updateMetrics("unmarshal_error", "", time.Since(startTime), false)
-		// Unmarshal errors are non-recoverable, mark as processed to skip bad data
-		if p.changeStreamWatcher != nil {
-			if markErr := p.changeStreamWatcher.MarkProcessed(ctx, []byte{}); markErr != nil {
-				slog.Error("Failed to mark processed after unmarshal error", "error", markErr)
-			}
+
+		if markErr := p.markProcessed(ctx); markErr != nil {
+			slog.Error("Failed to mark processed after unmarshal error", "error", markErr)
 		}
 
-		return fmt.Errorf("failed to unmarshal event: %w", err)
+		return nil, "", fmt.Errorf("failed to unmarshal event: %w", err)
 	}
 
 	eventID, err := event.GetDocumentID()
 	if err != nil {
 		p.updateMetrics("document_id_error", "", time.Since(startTime), false)
-		// Document ID errors are non-recoverable, mark as processed
-		if p.changeStreamWatcher != nil {
-			if markErr := p.changeStreamWatcher.MarkProcessed(ctx, []byte{}); markErr != nil {
-				slog.Error("Failed to mark processed after document ID error", "error", markErr)
-			}
+
+		if markErr := p.markProcessed(ctx); markErr != nil {
+			slog.Error("Failed to mark processed after document ID error", "error", markErr)
 		}
 
-		return fmt.Errorf("failed to get document ID: %w", err)
+		return nil, "", fmt.Errorf("failed to get document ID: %w", err)
 	}
 
-	slog.Debug("Processing event", "eventID", eventID, "event", healthEventWithStatus)
+	return &healthEvent, eventID, nil
+}
 
-	// Process event - NO internal retries
-	// Handler is responsible for any retries it needs
-	//nolint:nestif // Error handling requires nested conditionals for proper cleanup
-	//nolint:nestif // Error handling requires nested conditionals for proper cleanup
-	processErr := p.eventHandler.ProcessEvent(ctx, &healthEventWithStatus)
-	if processErr != nil {
-		p.updateMetrics("processing_failed", eventID, time.Since(startTime), false)
-		slog.Error("Event processing failed", "eventID", eventID, "error", processErr)
+// handleProcessingFailure handles the case where the event handler returns an error.
+// When MarkProcessedOnError is false, the event is preserved for retry on next restart.
+func (p *DefaultEventProcessor) handleProcessingFailure(
+	ctx context.Context, eventID string, processErr error, startTime time.Time,
+) error {
+	p.updateMetrics("processing_failed", eventID, time.Since(startTime), false)
+	slog.Error("Event processing failed", "eventID", eventID, "error", processErr)
 
-		// CRITICAL FIX: Only mark as processed if configured to do so OR if handler succeeded
-		if p.config.MarkProcessedOnError {
-			slog.Warn("Marking failed event as processed due to MarkProcessedOnError=true",
-				"eventID", eventID, "error", processErr)
-
-			if p.changeStreamWatcher != nil {
-				if markErr := p.changeStreamWatcher.MarkProcessed(ctx, []byte{}); markErr != nil {
-					slog.Error("Failed to mark processed after error", "error", markErr)
-					return fmt.Errorf("failed to mark event as processed: %w", markErr)
-				}
-			}
-		} else {
-			// Do NOT mark as processed - event will be retried on next restart
-			slog.Error("Event processing failed, NOT marking as processed - will retry on restart",
-				"eventID", eventID, "error", processErr)
-
-			return processErr
-		}
+	if !p.config.MarkProcessedOnError {
+		slog.Error("Event processing failed, NOT marking as processed - will retry on restart",
+			"eventID", eventID, "error", processErr)
 
 		return processErr
 	}
 
-	// Success - mark as processed
-	p.updateMetrics("processing_success", eventID, time.Since(startTime), true)
+	slog.Warn("Marking failed event as processed due to MarkProcessedOnError=true",
+		"eventID", eventID, "error", processErr)
 
-	if p.changeStreamWatcher != nil {
-		if err := p.changeStreamWatcher.MarkProcessed(ctx, []byte{}); err != nil {
-			p.updateMetrics("mark_processed_error", eventID, time.Since(startTime), false)
-			return fmt.Errorf("failed to mark event as processed: %w", err)
-		}
+	if err := p.markProcessed(ctx); err != nil {
+		return fmt.Errorf("failed to mark event as processed: %w", err)
 	}
 
-	return nil
+	return processErr
+}
+
+func (p *DefaultEventProcessor) markProcessed(ctx context.Context) error {
+	if p.changeStreamWatcher == nil {
+		return nil
+	}
+
+	return p.changeStreamWatcher.MarkProcessed(ctx, []byte{})
 }
 
 // updateMetrics updates processing metrics if enabled

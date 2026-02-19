@@ -955,7 +955,10 @@ func (c *PostgreSQLDatabaseClient) Aggregate(
 
 	// Create a PostgreSQLClient to handle the aggregation
 	// This reuses the existing db connection
-	postgresClient := client.NewPostgreSQLClientFromDB(c.db, c.tableName)
+	postgresClient, err := client.NewPostgreSQLClientFromDB(c.db, c.tableName)
+	if err != nil {
+		return nil, err
+	}
 
 	// Delegate to the PostgreSQLClient implementation
 	return postgresClient.Aggregate(ctx, pipeline)

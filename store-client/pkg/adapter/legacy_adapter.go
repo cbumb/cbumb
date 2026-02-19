@@ -90,49 +90,24 @@ func (l *LegacyDatabaseConfigAdapter) GetCollectionName() string {
 }
 
 // buildPostgreSQLConnectionString builds a PostgreSQL connection string from DataStoreConfig
-//
-//nolint:cyclop // Complex but clear connection string building logic
 func (l *LegacyDatabaseConfigAdapter) buildPostgreSQLConnectionString() string {
 	conn := l.dsConfig.Connection
-	params := []string{}
 
-	if conn.Host != "" {
-		params = append(params, "host="+conn.Host)
-	}
+	var params []string
+
+	appendIfSet(&params, "host", conn.Host)
 
 	if conn.Port > 0 {
 		params = append(params, fmt.Sprintf("port=%d", conn.Port))
 	}
 
-	if conn.Database != "" {
-		params = append(params, "dbname="+conn.Database)
-	}
-
-	if conn.Username != "" {
-		params = append(params, "user="+conn.Username)
-	}
-
-	if conn.Password != "" {
-		params = append(params, "password="+conn.Password)
-	}
-
-	if conn.SSLMode != "" {
-		params = append(params, "sslmode="+conn.SSLMode)
-	}
-
-	if conn.SSLCert != "" {
-		params = append(params, "sslcert="+conn.SSLCert)
-	}
-
-	if conn.SSLKey != "" {
-		params = append(params, "sslkey="+conn.SSLKey)
-	}
-
-	if conn.SSLRootCert != "" {
-		params = append(params, "sslrootcert="+conn.SSLRootCert)
-	}
-
-	// Join all parameters with spaces
+	appendIfSet(&params, "dbname", conn.Database)
+	appendIfSet(&params, "user", conn.Username)
+	appendIfSet(&params, "password", conn.Password)
+	appendIfSet(&params, "sslmode", conn.SSLMode)
+	appendIfSet(&params, "sslcert", conn.SSLCert)
+	appendIfSet(&params, "sslkey", conn.SSLKey)
+	appendIfSet(&params, "sslrootcert", conn.SSLRootCert)
 
 	result := ""
 
@@ -145,6 +120,12 @@ func (l *LegacyDatabaseConfigAdapter) buildPostgreSQLConnectionString() string {
 	}
 
 	return result
+}
+
+func appendIfSet(params *[]string, key, value string) {
+	if value != "" {
+		*params = append(*params, key+"="+value)
+	}
 }
 
 func (l *LegacyDatabaseConfigAdapter) GetCertConfig() config.CertificateConfig {

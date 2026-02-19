@@ -240,91 +240,100 @@ func NewDatabaseConfigWithCollection(
 
 // newPostgreSQLCompatibleConfig creates a PostgreSQL-compatible database config
 // using DATASTORE_* environment variables instead of MONGODB_* variables
-//
-//nolint:cyclop // Config validation requires checking multiple environment variables
 func newPostgreSQLCompatibleConfig(certMountPath, tableEnvVar, defaultTable string) (DatabaseConfig, error) {
-	host := os.Getenv("DATASTORE_HOST")
-	if host == "" {
-		return nil, fmt.Errorf("required environment variable DATASTORE_HOST is not set")
+	host, err := requiredEnv("DATASTORE_HOST")
+	if err != nil {
+		return nil, err
 	}
 
-	port := os.Getenv("DATASTORE_PORT")
-	if port == "" {
-		port = "5432" // Default PostgreSQL port
+	database, err := requiredEnv("DATASTORE_DATABASE")
+	if err != nil {
+		return nil, err
 	}
 
-	database := os.Getenv("DATASTORE_DATABASE")
-	if database == "" {
-		return nil, fmt.Errorf("required environment variable DATASTORE_DATABASE is not set")
+	username, err := requiredEnv("DATASTORE_USERNAME")
+	if err != nil {
+		return nil, err
 	}
 
-	username := os.Getenv("DATASTORE_USERNAME")
-	if username == "" {
-		return nil, fmt.Errorf("required environment variable DATASTORE_USERNAME is not set")
-	}
+	sslConfig := loadSSLConfig(certMountPath)
 
-	// Build PostgreSQL connection URI
-	// Format: "host=%s port=%s dbname=%s user=%s sslmode=require ..."
-	sslmode := os.Getenv("DATASTORE_SSLMODE")
-	if sslmode == "" {
-		sslmode = "require"
-	}
-
-	sslcert := os.Getenv("DATASTORE_SSLCERT")
-	if sslcert == "" {
-		sslcert = filepath.Join(certMountPath, "tls.crt")
-	}
-
-	sslkey := os.Getenv("DATASTORE_SSLKEY")
-	if sslkey == "" {
-		sslkey = filepath.Join(certMountPath, "tls.key")
-	}
-
-	sslrootcert := os.Getenv("DATASTORE_SSLROOTCERT")
-	if sslrootcert == "" {
-		sslrootcert = filepath.Join(certMountPath, "ca.crt")
-	}
-
-	// Build connection URI in PostgreSQL format
 	connectionURI := fmt.Sprintf("host=%s port=%s dbname=%s user=%s sslmode=%s sslcert=%s sslkey=%s sslrootcert=%s",
-		host, port, database, username, sslmode, sslcert, sslkey, sslrootcert)
+		host, envWithDefault("DATASTORE_PORT", "5432"), database, username,
+		sslConfig.mode, sslConfig.cert, sslConfig.key, sslConfig.rootCert)
 
-	// Determine table name using the provided parameters
-	// For PostgreSQL, this maps to the table name (converted to snake_case by the client)
-	tableEnvName := tableEnvVar
-	if tableEnvName == "" {
-		tableEnvName = EnvMongoDBCollectionName
+	tableName, err := resolveTableName(tableEnvVar, defaultTable)
+	if err != nil {
+		return nil, err
 	}
 
-	tableName := os.Getenv(tableEnvName)
-	if tableName == "" {
-		if defaultTable != "" {
-			tableName = defaultTable
-		} else {
-			return nil, fmt.Errorf("required environment variable %s is not set", tableEnvName)
-		}
-	}
-
-	// Load timeout configuration
 	timeoutConfig, err := loadTimeoutConfigFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load timeout configuration: %w", err)
-	}
-
-	certConfig := &StandardCertificateConfig{
-		certPath:   sslcert,
-		keyPath:    sslkey,
-		caCertPath: sslrootcert,
 	}
 
 	return &StandardDatabaseConfig{
 		connectionURI:  connectionURI,
 		databaseName:   database,
 		collectionName: tableName,
-		certConfig:     certConfig,
-		timeoutConfig:  timeoutConfig,
-		appName:        os.Getenv("APP_NAME"),
+		certConfig: &StandardCertificateConfig{
+			certPath:   sslConfig.cert,
+			keyPath:    sslConfig.key,
+			caCertPath: sslConfig.rootCert,
+		},
+		timeoutConfig: timeoutConfig,
+		appName:       os.Getenv("APP_NAME"),
 	}, nil
+}
+
+type sslPaths struct {
+	mode     string
+	cert     string
+	key      string
+	rootCert string
+}
+
+func loadSSLConfig(certMountPath string) sslPaths {
+	return sslPaths{
+		mode:     envWithDefault("DATASTORE_SSLMODE", "require"),
+		cert:     envWithDefault("DATASTORE_SSLCERT", filepath.Join(certMountPath, "tls.crt")),
+		key:      envWithDefault("DATASTORE_SSLKEY", filepath.Join(certMountPath, "tls.key")),
+		rootCert: envWithDefault("DATASTORE_SSLROOTCERT", filepath.Join(certMountPath, "ca.crt")),
+	}
+}
+
+func resolveTableName(tableEnvVar, defaultTable string) (string, error) {
+	envName := tableEnvVar
+	if envName == "" {
+		envName = EnvMongoDBCollectionName
+	}
+
+	if name := os.Getenv(envName); name != "" {
+		return name, nil
+	}
+
+	if defaultTable != "" {
+		return defaultTable, nil
+	}
+
+	return "", fmt.Errorf("required environment variable %s is not set", envName)
+}
+
+func requiredEnv(name string) (string, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return "", fmt.Errorf("required environment variable %s is not set", name)
+	}
+
+	return value, nil
+}
+
+func envWithDefault(name, defaultValue string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+
+	return defaultValue
 }
 
 // loadTimeoutConfigFromEnv loads timeout configuration from environment variables
