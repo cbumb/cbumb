@@ -1292,7 +1292,8 @@ func (c *PostgreSQLClient) buildExprArrayLiteral(v []interface{}) (string, error
 	for _, elem := range v {
 		switch elemVal := elem.(type) {
 		case string:
-			elements = append(elements, fmt.Sprintf("'%s'", elemVal))
+			escaped := strings.ReplaceAll(elemVal, "'", "''")
+			elements = append(elements, fmt.Sprintf("'%s'", escaped))
 		case map[string]interface{}:
 			jsonBytes, err := json.Marshal(elemVal)
 			if err != nil {

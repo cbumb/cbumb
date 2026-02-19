@@ -113,8 +113,14 @@ func copyFieldValue(dstField, srcField reflect.Value) {
 			return
 		}
 
-		dstField.Set(reflect.New(dstField.Type().Elem()))
-		CopyStructFields(dstField.Elem(), srcField.Elem())
+		if dstField.Type().Elem().Kind() == reflect.Struct && srcField.Type().Elem().Kind() == reflect.Struct {
+			dstField.Set(reflect.New(dstField.Type().Elem()))
+			CopyStructFields(dstField.Elem(), srcField.Elem())
+
+			return
+		}
+
+		dstField.Set(srcField)
 
 		return
 	}
