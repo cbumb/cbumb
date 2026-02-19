@@ -86,16 +86,17 @@ func CopyStructFields(dst, src reflect.Value) {
 		dstFieldType := dstType.Field(i)
 
 		srcField := src.FieldByName(dstFieldType.Name)
-		if !srcField.IsValid() {
+		if !srcField.IsValid() || !dstField.CanSet() {
 			continue
 		}
 
-		if dstField.CanSet() {
-			copyFieldValue(dstField, srcField)
-		}
+		copyFieldValue(dstField, srcField)
 	}
 }
 
+// copyFieldValue is intentionally duplicated from
+// datastore/providers/mongodb/watcher/unmarshaller.go to avoid a shared
+// dependency between these two independent packages.
 func copyFieldValue(dstField, srcField reflect.Value) {
 	if dstField.Kind() == reflect.Ptr && srcField.Kind() == reflect.Ptr {
 		if srcField.IsNil() {

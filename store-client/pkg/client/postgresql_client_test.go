@@ -894,3 +894,34 @@ func TestCountWithPostMatchFilter_ZeroCount(t *testing.T) {
 		t.Errorf("Query args do not contain the count threshold 5. Args: %v", args)
 	}
 }
+
+func TestValidateTableName(t *testing.T) {
+	tests := []struct {
+		name      string
+		tableName string
+		wantErr   bool
+	}{
+		{name: "empty string", tableName: "", wantErr: true},
+		{name: "valid simple name", tableName: "health_events", wantErr: false},
+		{name: "valid schema-qualified", tableName: "public.health_events", wantErr: false},
+		{name: "valid with digits", tableName: "table123", wantErr: false},
+		{name: "starts with digit", tableName: "1table", wantErr: true},
+		{name: "hyphen rejected", tableName: "health-events", wantErr: true},
+		{name: "semicolon rejected", tableName: "events;DROP", wantErr: true},
+		{name: "space rejected", tableName: "health events", wantErr: true},
+		{name: "single quote rejected", tableName: "events'bad", wantErr: true},
+		{name: "parenthesis rejected", tableName: "events()", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateTableName(tt.tableName)
+			if tt.wantErr && err == nil {
+				t.Errorf("validateTableName(%q) = nil, want error", tt.tableName)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("validateTableName(%q) = %v, want nil", tt.tableName, err)
+			}
+		})
+	}
+}

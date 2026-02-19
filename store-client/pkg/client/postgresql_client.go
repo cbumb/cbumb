@@ -48,6 +48,10 @@ const (
 	frameBoundCurrentRow = "CURRENT ROW"
 )
 
+var comparisonOps = map[string]string{
+	"$gte": ">=", "$gt": ">", opLTE: "<=", "$lt": "<", opEQ: "=", "$ne": "!=",
+}
+
 // PostgreSQLClient implements DatabaseClient for PostgreSQL
 type PostgreSQLClient struct {
 	db       *sql.DB
@@ -786,10 +790,6 @@ func (c *PostgreSQLClient) buildExprCondition(expr interface{}) (string, error) 
 }
 
 func (c *PostgreSQLClient) dispatchExprCondition(op string, value interface{}) (string, error) {
-	comparisonOps := map[string]string{
-		"$gte": ">=", "$gt": ">", opLTE: "<=", "$lt": "<", opEQ: "=", "$ne": "!=",
-	}
-
 	if sqlOp, ok := comparisonOps[op]; ok {
 		return c.buildComparisonExpr(sqlOp, value)
 	}
@@ -1300,7 +1300,8 @@ func (c *PostgreSQLClient) buildExprArrayLiteral(v []interface{}) (string, error
 				return "", fmt.Errorf("failed to marshal array element: %w", err)
 			}
 
-			elements = append(elements, fmt.Sprintf("'%s'::jsonb", string(jsonBytes)))
+			jsonStr := strings.ReplaceAll(string(jsonBytes), "'", "''")
+			elements = append(elements, fmt.Sprintf("'%s'::jsonb", jsonStr))
 		default:
 			elemSQL, err := c.buildExprValue(elem)
 			if err != nil {
@@ -1399,8 +1400,11 @@ func (c *PostgreSQLClient) buildFilterOperand(operand interface{}) (string, erro
 
 			return path, nil
 		}
+
 		// Regular string literal
-		return fmt.Sprintf("'%s'", v), nil
+		escaped := strings.ReplaceAll(v, "'", "''")
+
+		return fmt.Sprintf("'%s'", escaped), nil
 	default:
 		return "", fmt.Errorf("unsupported filter operand type: %T", operand)
 	}
@@ -1432,8 +1436,11 @@ func (c *PostgreSQLClient) buildMapExpression(expr interface{}) (string, error) 
 
 			return path, nil
 		}
+
 		// Regular string literal
-		return fmt.Sprintf("to_jsonb('%s')", v), nil
+		escaped := strings.ReplaceAll(v, "'", "''")
+
+		return fmt.Sprintf("to_jsonb('%s')", escaped), nil
 	default:
 		return "", fmt.Errorf("unsupported map expression type: %T", expr)
 	}
@@ -2173,6 +2180,11 @@ func (b *aggregationQueryBuilder) buildWindowFieldsQuery() string {
 	documentExpr := "document"
 
 	for fieldName, fieldOutput := range b.windowFields.output {
+		if !isValidFieldName(fieldName) {
+			slog.Warn("Skipping window field with invalid name", "field", fieldName)
+			continue
+		}
+
 		windowFuncSQL := b.buildWindowFunction(fieldOutput, orderByClause)
 		documentExpr = fmt.Sprintf("jsonb_set(%s, '{%s}', %s)",
 			documentExpr, fieldName, windowFuncSQL)
@@ -2362,6 +2374,11 @@ func (b *aggregationQueryBuilder) buildAddFieldsQuery() string {
 	sort.Strings(fieldNames)
 
 	for _, fieldName := range fieldNames {
+		if !isValidFieldName(fieldName) {
+			slog.Warn("Skipping $addFields field with invalid name", "field", fieldName)
+			continue
+		}
+
 		fieldExpr := b.addFields[fieldName]
 
 		fieldValueSQL, err := b.client.buildExprValue(fieldExpr)
@@ -2689,10 +2706,15 @@ func (c *postgresqlCursor) Err() error {
 
 // buildQuery constructs a SQL query string using fmt.Sprintf. This centralizes
 // dynamic SQL construction for cases where parameterized queries cannot be used
-// (e.g., table names). All table names are validated at client construction via
-// validateTableName to contain only safe identifier characters.
+// (e.g., table names). Callers must ensure arguments are safe:
+//   - Table names (c.table): validated at client construction via validateTableName.
+//   - WHERE/ORDER BY/SET clauses: built internally by buildWhereClause,
+//     buildOrderByClause, buildUpdateClause using parameterized values.
+//   - Select lists, subqueries, window fragments: assembled internally by
+//     the aggregation query builder.
+//   - Field names in jsonb_set paths: validated via isValidFieldName.
 //
-//nolint:gosec // G201: table names are validated at construction to contain only safe identifier characters
+//nolint:gosec // G201: see above — all arguments are either validated or internally generated
 func buildQuery(format string, args ...interface{}) string {
 	return fmt.Sprintf(format, args...)
 }
@@ -2700,6 +2722,11 @@ func buildQuery(format string, args ...interface{}) string {
 func validateTableName(name string) error {
 	if name == "" {
 		return fmt.Errorf("table name cannot be empty")
+	}
+
+	firstRune := rune(name[0])
+	if firstRune >= '0' && firstRune <= '9' {
+		return fmt.Errorf("table name cannot start with a digit: %c", firstRune)
 	}
 
 	for _, r := range name {
@@ -2716,4 +2743,18 @@ func isValidIdentifierChar(r rune) bool {
 		(r >= 'A' && r <= 'Z') ||
 		(r >= '0' && r <= '9') ||
 		r == '_' || r == '.'
+}
+
+func isValidFieldName(name string) bool {
+	if name == "" {
+		return false
+	}
+
+	for _, r := range name {
+		if !isValidIdentifierChar(r) {
+			return false
+		}
+	}
+
+	return true
 }
