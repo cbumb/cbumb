@@ -17,6 +17,7 @@ package client
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -83,7 +84,7 @@ func TestHandleProcessingFailure(t *testing.T) {
 				t.Fatal("expected error, got nil")
 			}
 
-			if got := err.Error(); !contains(got, tt.wantErr) {
+			if got := err.Error(); !strings.Contains(got, tt.wantErr) {
 				t.Errorf("error = %q, want substring %q", got, tt.wantErr)
 			}
 
@@ -94,16 +95,3 @@ func TestHandleProcessingFailure(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchSubstring(s, substr)
-}
-
-func searchSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-
-	return false
-}

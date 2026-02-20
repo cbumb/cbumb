@@ -213,7 +213,6 @@ func (p *DefaultEventProcessor) handleProcessingFailure(
 	ctx context.Context, eventID string, processErr error, startTime time.Time,
 ) error {
 	p.updateMetrics("processing_failed", eventID, time.Since(startTime), false)
-	slog.Error("Event processing failed", "eventID", eventID, "error", processErr)
 
 	if !p.config.MarkProcessedOnError {
 		slog.Error("Event processing failed, NOT marking as processed - will retry on restart",

@@ -564,21 +564,17 @@ func (c *PostgreSQLClient) CountDocuments(ctx context.Context, filter interface{
 
 	query := buildQuery("SELECT COUNT(*) FROM %s WHERE %s", c.table, whereClause)
 
-	// Apply options
 	if opts != nil {
-		if opts.Limit != nil {
-			query = buildQuery("SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE %s LIMIT %d) AS limited",
-				c.table, whereClause, *opts.Limit)
-		}
-
-		if opts.Skip != nil {
-			query = buildQuery("SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE %s OFFSET %d) AS skipped",
-				c.table, whereClause, *opts.Skip)
-		}
-
-		if opts.Limit != nil && opts.Skip != nil {
+		switch {
+		case opts.Limit != nil && opts.Skip != nil:
 			query = buildQuery("SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE %s LIMIT %d OFFSET %d) AS limited_skipped",
 				c.table, whereClause, *opts.Limit, *opts.Skip)
+		case opts.Limit != nil:
+			query = buildQuery("SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE %s LIMIT %d) AS limited",
+				c.table, whereClause, *opts.Limit)
+		case opts.Skip != nil:
+			query = buildQuery("SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE %s OFFSET %d) AS skipped",
+				c.table, whereClause, *opts.Skip)
 		}
 	}
 
@@ -1637,6 +1633,10 @@ func (c *PostgreSQLClient) buildOrderByClause(sort interface{}) (string, error) 
 		// Convert direction to SQL (1 = ASC, -1 = DESC)
 		dir := "ASC"
 		if dirInt, ok := direction.(int); ok && dirInt < 0 {
+			dir = orderDESC
+		}
+
+		if dirFloat, ok := direction.(float64); ok && dirFloat < 0 {
 			dir = orderDESC
 		}
 
