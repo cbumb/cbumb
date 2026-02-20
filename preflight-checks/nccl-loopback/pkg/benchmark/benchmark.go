@@ -49,7 +49,7 @@ type Runner struct {
 	binaryPath string
 }
 
-// NewRunner creates a new benchmark runner.
+// NewRunner creates a new benchmark runner with the given binary path.
 func NewRunner(binaryPath string) *Runner {
 	return &Runner{binaryPath: binaryPath}
 }
@@ -67,8 +67,7 @@ func (r *Runner) Run(ctx context.Context, numGPUs, testSizeMB int) (*Result, err
 
 	sizeArg := fmt.Sprintf("%dM", testSizeMB)
 
-	//nolint:gosec // Validated binary path
-	cmd := exec.CommandContext(ctx, r.binaryPath,
+	cmd := exec.CommandContext(ctx, r.binaryPath, //nolint:gosec // G204
 		"-b", sizeArg,
 		"-e", sizeArg,
 		"-g", strconv.Itoa(numGPUs),

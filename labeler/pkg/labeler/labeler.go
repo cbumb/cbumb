@@ -79,26 +79,66 @@ func (l *Labeler) allInformersSynced() bool {
 }
 
 // NewLabeler creates a new Labeler instance
-// nolint: cyclop // todo
 func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	dcgmApp, driverApp, gkeInstallerApp, kataLabelOverride string) (*Labeler, error) {
-	labelSelector, err := labels.Parse(fmt.Sprintf("app in (%s,%s)", dcgmApp, driverApp))
+	podInformer, err := createPodInformer(clientset, resyncPeriod, dcgmApp, driverApp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse label selector: %w", err)
+		return nil, fmt.Errorf("create pod informer: %w", err)
 	}
 
-	gkeInstallerLabelSelector, err := labels.Parse(fmt.Sprintf("k8s-app=%s", gkeInstallerApp))
+	gkeInstallerInformer, err := createGKEInstallerInformer(clientset, resyncPeriod, gkeInstallerApp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse label selector: %w", err)
+		return nil, fmt.Errorf("create GKE installer informer: %w", err)
 	}
 
-	// Build kata labels list with default plus optional override
+	nodeInformer := createNodeInformer(clientset, resyncPeriod)
+
+	l := &Labeler{
+		clientset:            clientset,
+		podInformer:          podInformer,
+		nodeInformer:         nodeInformer,
+		gkeInstallerInformer: gkeInstallerInformer,
+		informersSynced: []cache.InformerSynced{
+			podInformer.HasSynced,
+			nodeInformer.HasSynced,
+			gkeInstallerInformer.HasSynced,
+		},
+		ctx:                  context.Background(),
+		dcgmAppLabel:         dcgmApp,
+		driverAppLabel:       driverApp,
+		gkeInstallerAppLabel: gkeInstallerApp,
+		kataLabels:           buildKataLabels(kataLabelOverride),
+	}
+
+	if err := l.registerPodEventHandlers(); err != nil {
+		return nil, fmt.Errorf("register pod event handlers: %w", err)
+	}
+
+	if err := l.registerNodeEventHandlers(); err != nil {
+		return nil, fmt.Errorf("register node event handlers: %w", err)
+	}
+
+	slog.Info("Labeler created, watching DCGM and driver pods, and nodes for kata detection")
+
+	return l, nil
+}
+
+func buildKataLabels(kataLabelOverride string) []string {
 	kataLabels := []string{KataRuntimeDefaultLabel}
-	if kataLabelOverride != "" {
+	if kataLabelOverride != "" && kataLabelOverride != KataRuntimeDefaultLabel {
 		kataLabels = append(kataLabels, kataLabelOverride)
 	}
 
-	// Create pod informer factory with label selector
+	return kataLabels
+}
+
+func createPodInformer(clientset kubernetes.Interface, resyncPeriod time.Duration,
+	dcgmApp, driverApp string) (cache.SharedIndexInformer, error) {
+	labelSelector, err := labels.Parse(fmt.Sprintf("app in (%s,%s)", dcgmApp, driverApp))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse pod label selector: %w", err)
+	}
+
 	podInformerFactory := informers.NewSharedInformerFactoryWithOptions(
 		clientset,
 		resyncPeriod,
@@ -106,20 +146,8 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 			options.LabelSelector = labelSelector.String()
 		}),
 	)
-	gkeInstallerInformerFactory := informers.NewSharedInformerFactoryWithOptions(
-		clientset,
-		resyncPeriod,
-		informers.WithTweakListOptions(func(options *metav1.ListOptions) {
-			options.LabelSelector = gkeInstallerLabelSelector.String()
-		}),
-	)
-
-	// Create node informer factory (no filtering needed)
-	nodeInformerFactory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
 
 	podInformer := podInformerFactory.Core().V1().Pods().Informer()
-	gkeInstallerInformer := gkeInstallerInformerFactory.Core().V1().Pods().Informer()
-	nodeInformer := nodeInformerFactory.Core().V1().Nodes().Informer()
 
 	err = podInformer.GetIndexer().AddIndexers(
 		cache.Indexers{
@@ -149,8 +177,28 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 			},
 		})
 	if err != nil {
-		return nil, fmt.Errorf("failed to add indexer: %w", err)
+		return nil, fmt.Errorf("failed to add pod indexer: %w", err)
 	}
+
+	return podInformer, nil
+}
+
+func createGKEInstallerInformer(clientset kubernetes.Interface, resyncPeriod time.Duration,
+	gkeInstallerApp string) (cache.SharedIndexInformer, error) {
+	labelSelector, err := labels.Parse(fmt.Sprintf("k8s-app=%s", gkeInstallerApp))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse GKE installer label selector: %w", err)
+	}
+
+	gkeInstallerInformerFactory := informers.NewSharedInformerFactoryWithOptions(
+		clientset,
+		resyncPeriod,
+		informers.WithTweakListOptions(func(options *metav1.ListOptions) {
+			options.LabelSelector = labelSelector.String()
+		}),
+	)
+
+	gkeInstallerInformer := gkeInstallerInformerFactory.Core().V1().Pods().Informer()
 
 	err = gkeInstallerInformer.GetIndexer().AddIndexers(
 		cache.Indexers{
@@ -168,38 +216,15 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 			},
 		})
 	if err != nil {
-		return nil, fmt.Errorf("failed to add indexer: %w", err)
+		return nil, fmt.Errorf("failed to add GKE installer indexer: %w", err)
 	}
 
-	l := &Labeler{
-		clientset:            clientset,
-		podInformer:          podInformer,
-		nodeInformer:         nodeInformer,
-		gkeInstallerInformer: gkeInstallerInformer,
-		informersSynced: []cache.InformerSynced{
-			podInformer.HasSynced,
-			nodeInformer.HasSynced,
-			gkeInstallerInformer.HasSynced,
-		},
-		ctx:                  context.Background(),
-		dcgmAppLabel:         dcgmApp,
-		driverAppLabel:       driverApp,
-		gkeInstallerAppLabel: gkeInstallerApp,
-		kataLabels:           kataLabels,
-	}
+	return gkeInstallerInformer, nil
+}
 
-	// Register event handlers
-	if err := l.registerPodEventHandlers(); err != nil {
-		return nil, err
-	}
-
-	if err := l.registerNodeEventHandlers(); err != nil {
-		return nil, err
-	}
-
-	slog.Info("Labeler created, watching DCGM and driver pods, and nodes for kata detection")
-
-	return l, nil
+func createNodeInformer(clientset kubernetes.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
+	factory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
+	return factory.Core().V1().Nodes().Informer()
 }
 
 func (l *Labeler) getEventHandlers() cache.ResourceEventHandlerFuncs {
@@ -315,7 +340,7 @@ func (l *Labeler) Run(ctx context.Context) error {
 
 	slog.Info("Waiting for Labeler caches to sync...")
 
-	if ok := cache.WaitForCacheSync(ctx.Done(), l.informersSynced...); !ok {
+	if synced := cache.WaitForCacheSync(ctx.Done(), l.informersSynced...); !synced {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 
