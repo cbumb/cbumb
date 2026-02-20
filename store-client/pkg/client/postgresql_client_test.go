@@ -912,7 +912,9 @@ func TestValidateTableName(t *testing.T) {
 		{name: "single quote rejected", tableName: "events'bad", wantErr: true},
 		{name: "parenthesis rejected", tableName: "events()", wantErr: true},
 		{name: "leading dot rejected", tableName: ".table", wantErr: true},
+		{name: "trailing dot rejected", tableName: "table.", wantErr: true},
 		{name: "multiple dots rejected", tableName: "a.b.c", wantErr: true},
+		{name: "schema segment starts with digit", tableName: "public.1table", wantErr: true},
 	}
 
 	for _, tt := range tests {

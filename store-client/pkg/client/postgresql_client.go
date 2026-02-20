@@ -50,12 +50,50 @@ const (
 	frameBoundCurrentRow = "CURRENT ROW"
 )
 
+type exprHandler func(*PostgreSQLClient, interface{}) (string, error)
+
 var (
 	comparisonOps = map[string]string{
 		"$gte": ">=", "$gt": ">", opLTE: "<=", "$lt": "<", opEQ: "=", "$ne": "!=",
 	}
-	paramRegex = regexp.MustCompile(`\$(\d+)`)
+	paramRegex           = regexp.MustCompile(`\$(\d+)`)
+	exprOperatorHandlers map[string]exprHandler
 )
+
+func subtractHandler(c *PostgreSQLClient, o interface{}) (string, error) {
+	return c.buildArithmeticExpr("-", o)
+}
+
+func divideHandler(c *PostgreSQLClient, o interface{}) (string, error) {
+	return c.buildArithmeticExpr("/", o)
+}
+
+func eqHandler(c *PostgreSQLClient, o interface{}) (string, error) {
+	return c.buildValueBinaryOp("$eq", "=", o)
+}
+
+func lteHandler(c *PostgreSQLClient, o interface{}) (string, error) {
+	return c.buildValueBinaryOp("$lte", "<=", o)
+}
+
+func init() {
+	exprOperatorHandlers = map[string]exprHandler{
+		"$subtract":        subtractHandler,
+		"$divide":          divideHandler,
+		"$toLong":          (*PostgreSQLClient).buildToLongExpr,
+		"$size":            (*PostgreSQLClient).buildSizeExpr,
+		"$arrayElemAt":     (*PostgreSQLClient).buildArrayElemAtExpr,
+		"$ifNull":          (*PostgreSQLClient).buildIfNullExpr,
+		"$filter":          (*PostgreSQLClient).buildFilterExpr,
+		"$map":             (*PostgreSQLClient).buildMapExpr,
+		"$setIntersection": (*PostgreSQLClient).buildSetIntersectionExpr,
+		opEQ:               eqHandler,
+		"$in":              (*PostgreSQLClient).buildValueInExpr,
+		"$and":             (*PostgreSQLClient).buildValueAndExpr,
+		"$anyElementTrue":  (*PostgreSQLClient).buildAnyElementTrueExpr,
+		opLTE:              lteHandler,
+	}
+}
 
 // PostgreSQLClient implements DatabaseClient for PostgreSQL
 type PostgreSQLClient struct {
@@ -986,27 +1024,8 @@ func (c *PostgreSQLClient) buildExprOperator(exprMap map[string]interface{}) (st
 }
 
 func (c *PostgreSQLClient) dispatchExprOperator(op string, operand interface{}) (string, error) {
-	type exprHandler func(interface{}) (string, error)
-
-	handlers := map[string]exprHandler{
-		"$subtract":        func(o interface{}) (string, error) { return c.buildArithmeticExpr("-", o) },
-		"$divide":          func(o interface{}) (string, error) { return c.buildArithmeticExpr("/", o) },
-		"$toLong":          c.buildToLongExpr,
-		"$size":            c.buildSizeExpr,
-		"$arrayElemAt":     c.buildArrayElemAtExpr,
-		"$ifNull":          c.buildIfNullExpr,
-		"$filter":          c.buildFilterExpr,
-		"$map":             c.buildMapExpr,
-		"$setIntersection": c.buildSetIntersectionExpr,
-		opEQ:               func(o interface{}) (string, error) { return c.buildValueBinaryOp("$eq", "=", o) },
-		"$in":              c.buildValueInExpr,
-		"$and":             c.buildValueAndExpr,
-		"$anyElementTrue":  c.buildAnyElementTrueExpr,
-		opLTE:              func(o interface{}) (string, error) { return c.buildValueBinaryOp("$lte", "<=", o) },
-	}
-
-	if handler, ok := handlers[op]; ok {
-		return handler(operand)
+	if handler, ok := exprOperatorHandlers[op]; ok {
+		return handler(c, operand)
 	}
 
 	slog.Warn("Unsupported expression operator",
@@ -2515,6 +2534,14 @@ func (c *PostgreSQLClient) buildUpdateClause(update interface{}) (string, []inte
 		// "nodeName" → '{nodeName}'
 		// "healthevent.nodename" → '{healthevent,nodename}'
 		parts := strings.Split(fieldPath, ".")
+		if err := validateFieldPath(parts); err != nil {
+			return "", nil, datastore.NewValidationError(
+				datastore.ProviderPostgreSQL,
+				fmt.Sprintf("$set field path %q: %v", fieldPath, err),
+				nil,
+			)
+		}
+
 		jsonbPath := "{" + strings.Join(parts, ",") + "}"
 
 		// Marshal value to JSON for JSONB
@@ -2540,6 +2567,16 @@ func (c *PostgreSQLClient) buildUpdateClause(update interface{}) (string, []inte
 	}
 
 	return fmt.Sprintf("%s = %s", jsonbDocumentColumn, setExpression), args, nil
+}
+
+func validateFieldPath(parts []string) error {
+	for _, part := range parts {
+		if !isValidFieldName(part) {
+			return fmt.Errorf("segment %q contains invalid characters", part)
+		}
+	}
+
+	return nil
 }
 
 // PostgreSQL-specific wrapper types
@@ -2761,29 +2798,34 @@ func validateTableName(name string) error {
 		return fmt.Errorf("table name cannot be empty")
 	}
 
-	firstRune := rune(name[0])
-	if firstRune >= '0' && firstRune <= '9' {
-		return fmt.Errorf("table name cannot start with a digit: %c", firstRune)
-	}
-
-	if firstRune == '.' {
-		return fmt.Errorf("table name cannot start with a dot")
-	}
-
-	dotCount := 0
-
-	for _, r := range name {
-		if !isValidIdentifierChar(r) {
-			return fmt.Errorf("table name contains invalid character: %c", r)
-		}
-
-		if r == '.' {
-			dotCount++
-		}
-	}
-
-	if dotCount > 1 {
+	segments := strings.Split(name, ".")
+	if len(segments) > 2 {
 		return fmt.Errorf("table name has too many dot separators (at most one for schema.table)")
+	}
+
+	for _, seg := range segments {
+		if err := validateIdentifierSegment(seg); err != nil {
+			return fmt.Errorf("invalid table name segment %q: %w", seg, err)
+		}
+	}
+
+	return nil
+}
+
+func validateIdentifierSegment(seg string) error {
+	if seg == "" {
+		return fmt.Errorf("segment cannot be empty")
+	}
+
+	firstRune := rune(seg[0])
+	if firstRune >= '0' && firstRune <= '9' {
+		return fmt.Errorf("cannot start with a digit")
+	}
+
+	for _, r := range seg {
+		if !isValidIdentifierChar(r) {
+			return fmt.Errorf("contains invalid character: %c", r)
+		}
 	}
 
 	return nil
@@ -2793,7 +2835,7 @@ func isValidIdentifierChar(r rune) bool {
 	return (r >= 'a' && r <= 'z') ||
 		(r >= 'A' && r <= 'Z') ||
 		(r >= '0' && r <= '9') ||
-		r == '_' || r == '.'
+		r == '_'
 }
 
 func isValidFieldName(name string) bool {
