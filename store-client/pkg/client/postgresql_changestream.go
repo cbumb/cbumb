@@ -322,12 +322,16 @@ func (w *PostgreSQLChangeStreamWatcher) fetchAndProcessChanges(ctx context.Conte
 
 	for rows.Next() {
 		entry, err := w.scanChangelogEntry(rows)
+		if entry != nil {
+			// Advance past this row even when unmarshal fails,
+			// to prevent a corrupt row from causing an infinite poll loop.
+			w.lastSeenID = entry.changelogID
+		}
+
 		if err != nil {
 			slog.Error("Failed to process changelog entry", "error", err)
 			continue
 		}
-
-		w.lastSeenID = entry.changelogID
 
 		if !w.matchesPipeline(entry) {
 			continue
@@ -343,6 +347,10 @@ func (w *PostgreSQLChangeStreamWatcher) fetchAndProcessChanges(ctx context.Conte
 	}
 }
 
+// scanChangelogEntry scans a row and unmarshals JSON fields. On scan failure
+// the returned entry is nil. On unmarshal failure the entry is still returned
+// with a valid changelogID so the caller can advance lastSeenID past the
+// corrupt row.
 func (w *PostgreSQLChangeStreamWatcher) scanChangelogEntry(rows *sql.Rows) (*postgresqlEvent, error) {
 	var (
 		entry                        postgresqlEvent
@@ -365,11 +373,11 @@ func (w *PostgreSQLChangeStreamWatcher) scanChangelogEntry(rows *sql.Rows) (*pos
 	slog.Debug("Scanned changelog entry", "changelogID", entry.changelogID, "operation", entry.operation)
 
 	if err := unmarshalJSONField(oldValuesJSON, &entry.oldValues); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal old_values: %w", err)
+		return &entry, fmt.Errorf("failed to unmarshal old_values for changelog ID %d: %w", entry.changelogID, err)
 	}
 
 	if err := unmarshalJSONField(newValuesJSON, &entry.newValues); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal new_values: %w", err)
+		return &entry, fmt.Errorf("failed to unmarshal new_values for changelog ID %d: %w", entry.changelogID, err)
 	}
 
 	return &entry, nil

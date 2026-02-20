@@ -76,6 +76,10 @@ func lteHandler(c *PostgreSQLClient, o interface{}) (string, error) {
 	return c.buildValueBinaryOp("$lte", "<=", o)
 }
 
+// init populates exprOperatorHandlers here rather than as a package-level var
+// initializer because the handler methods (e.g., buildSizeExpr) transitively
+// call dispatchExprOperator, which reads exprOperatorHandlers — creating a
+// compile-time initialization cycle. Using init() breaks the cycle.
 func init() {
 	exprOperatorHandlers = map[string]exprHandler{
 		"$subtract":        subtractHandler,
@@ -1681,7 +1685,12 @@ func (c *PostgreSQLClient) buildAggregationQuery(stages []map[string]interface{}
 		}
 	}
 
-	return builder.buildFinalQuery(), builder.args, nil
+	query, err := builder.buildFinalQuery()
+	if err != nil {
+		return "", nil, err
+	}
+
+	return query, builder.args, nil
 }
 
 // aggregationQueryBuilder helps build aggregation queries with reduced complexity
@@ -2044,8 +2053,7 @@ func (b *aggregationQueryBuilder) processAddFields(value interface{}) error {
 	return nil
 }
 
-func (b *aggregationQueryBuilder) buildFinalQuery() string {
-	// Handle $count operator
+func (b *aggregationQueryBuilder) buildFinalQuery() (string, error) {
 	if b.isCount {
 		return b.buildCountQuery()
 	}
@@ -2066,26 +2074,26 @@ func (b *aggregationQueryBuilder) buildFinalQuery() string {
 	}
 
 	// Standard query
-	return b.buildStandardQuery()
+	return b.buildStandardQuery(), nil
 }
 
 // buildCountQuery builds the SQL for $count aggregation with optional post-count filtering
-func (b *aggregationQueryBuilder) buildCountQuery() string {
+func (b *aggregationQueryBuilder) buildCountQuery() (string, error) {
 	subquery := b.query
 	if len(b.whereClauses) > 0 {
 		subquery += " WHERE " + strings.Join(b.whereClauses, " AND ")
 	}
-	// Wrap in a subquery and count
-	// Include a dummy 'id' column to match the cursor's Decode() expectations
-	countQuery := fmt.Sprintf("SELECT '1' as id, jsonb_build_object('%s', COUNT(*)) as document FROM (%s) as subq",
-		b.countField, subquery)
 
-	// If there's a post-count $match, wrap the count query and filter the result
+	countQuery := fmt.Sprintf(
+		"SELECT '1' as id, jsonb_build_object('%s', COUNT(*)) as document FROM (%s) as subq",
+		b.countField, subquery,
+	)
+
 	if b.postCountMatch != nil {
 		return b.buildPostCountFilter(countQuery)
 	}
 
-	return countQuery
+	return countQuery, nil
 }
 
 // buildStandardQuery builds a standard SELECT query with WHERE, ORDER BY, LIMIT, OFFSET
@@ -2114,54 +2122,56 @@ func (b *aggregationQueryBuilder) buildStandardQuery() string {
 // buildPostCountFilter wraps a count query with a WHERE clause to filter the count result.
 // This handles the MongoDB pattern: $count -> $match (filter on count)
 // Example: {$match: {count: {$gte: 5}}} after $count should return empty if count < 5
-func (b *aggregationQueryBuilder) buildPostCountFilter(countQuery string) string {
-	// Build WHERE conditions for the count result
+func (b *aggregationQueryBuilder) buildPostCountFilter(countQuery string) (string, error) {
 	conditions := []string{}
 
 	for field, value := range b.postCountMatch {
-		condition := b.buildPostCountCondition(field, value)
+		condition, err := b.buildPostCountCondition(field, value)
+		if err != nil {
+			return "", err
+		}
+
 		if condition != "" {
 			conditions = append(conditions, condition)
 		}
 	}
 
 	if len(conditions) == 0 {
-		return countQuery
+		return countQuery, nil
 	}
 
-	// Wrap the count query and apply the filter on the result
-	// The count result is in document->>'countField', so we filter on that
 	return fmt.Sprintf("SELECT * FROM (%s) as count_result WHERE %s",
-		countQuery, strings.Join(conditions, " AND "))
+		countQuery, strings.Join(conditions, " AND ")), nil
 }
 
 // buildPostCountCondition builds a single condition for filtering count results
-func (b *aggregationQueryBuilder) buildPostCountCondition(field string, value interface{}) string {
+func (b *aggregationQueryBuilder) buildPostCountCondition(field string, value interface{}) (string, error) {
 	if !isValidFieldName(field) {
-		slog.Warn("Skipping post-count condition with invalid field name", "field", field)
-		return ""
+		return "", datastore.NewValidationError(
+			datastore.ProviderPostgreSQL,
+			fmt.Sprintf("post-count field name contains invalid characters: %s", field),
+			nil,
+		)
 	}
 
 	fieldPath := fmt.Sprintf("(document->>'%s')::bigint", field)
 
 	switch v := value.(type) {
 	case map[string]interface{}:
-		// Handle comparison operators like {$gte: 5}
 		for op, opValue := range v {
 			if sqlOp := b.mapComparisonOperator(op); sqlOp != "" {
 				b.args = append(b.args, opValue)
 
-				return fmt.Sprintf("%s %s $%d", fieldPath, sqlOp, len(b.args))
+				return fmt.Sprintf("%s %s $%d", fieldPath, sqlOp, len(b.args)), nil
 			}
 		}
 	default:
-		// Direct equality comparison
 		b.args = append(b.args, v)
 
-		return fmt.Sprintf("%s = $%d", fieldPath, len(b.args))
+		return fmt.Sprintf("%s = $%d", fieldPath, len(b.args)), nil
 	}
 
-	return ""
+	return "", nil
 }
 
 // mapComparisonOperator maps MongoDB comparison operators to SQL operators
@@ -2184,54 +2194,51 @@ func (b *aggregationQueryBuilder) mapComparisonOperator(op string) string {
 	}
 }
 
-func (b *aggregationQueryBuilder) buildGroupQuery() string {
-	// For now, implement a simple GROUP BY with COUNT
-	// This is sufficient for the MultipleRemediations rule
+func (b *aggregationQueryBuilder) buildGroupQuery() (string, error) {
 	subquery := b.query
 	if len(b.whereClauses) > 0 {
 		subquery += " WHERE " + strings.Join(b.whereClauses, " AND ")
 	}
 
-	// Extract _id field for grouping
 	idField, hasID := b.groupBy["_id"]
 	if !hasID {
 		idField = nil
 	}
 
-	// Build aggregation fields
-	// For now, we always set _id to null in the simplified implementation
 	_ = idField // Mark as used for future implementation
 
 	selectFields := []string{}
 	selectFields = append(selectFields, "jsonb_build_object('_id', null) as document")
 
-	// Handle aggregation operators in the group stage
 	for fieldName, fieldExpr := range b.groupBy {
 		if fieldName == "_id" {
-			continue // Already handled
-		}
-
-		if !isValidFieldName(fieldName) {
-			slog.Warn("Skipping $group field with invalid name", "field", fieldName)
 			continue
 		}
 
-		// Check if it's a $sum operator
+		if !isValidFieldName(fieldName) {
+			return "", datastore.NewValidationError(
+				datastore.ProviderPostgreSQL,
+				fmt.Sprintf("$group field name contains invalid characters: %s", fieldName),
+				nil,
+			)
+		}
+
 		if exprMap, ok := fieldExpr.(map[string]interface{}); ok {
 			if sumVal, hasSum := exprMap["$sum"]; hasSum {
 				if sumVal == 1 {
-					// Simple count
-					return fmt.Sprintf("SELECT jsonb_build_object('%s', COUNT(*)) as document FROM (%s) as subq",
-						fieldName, subquery)
+					return fmt.Sprintf(
+						"SELECT jsonb_build_object('%s', COUNT(*)) as document FROM (%s) as subq",
+						fieldName, subquery,
+					), nil
 				}
 			}
 		}
 	}
 
-	return fmt.Sprintf("SELECT %s FROM (%s) as subq", strings.Join(selectFields, ", "), subquery)
+	return fmt.Sprintf("SELECT %s FROM (%s) as subq", strings.Join(selectFields, ", "), subquery), nil
 }
 
-func (b *aggregationQueryBuilder) buildWindowFieldsQuery() string {
+func (b *aggregationQueryBuilder) buildWindowFieldsQuery() (string, error) {
 	baseQuery := b.baseQueryWithWhere()
 	orderByClause := b.buildWindowOrderByClause()
 
@@ -2240,8 +2247,11 @@ func (b *aggregationQueryBuilder) buildWindowFieldsQuery() string {
 
 	for fieldName, fieldOutput := range b.windowFields.output {
 		if !isValidFieldName(fieldName) {
-			slog.Warn("Skipping window field with invalid name", "field", fieldName)
-			continue
+			return "", datastore.NewValidationError(
+				datastore.ProviderPostgreSQL,
+				fmt.Sprintf("window field name contains invalid characters: %s", fieldName),
+				nil,
+			)
 		}
 
 		windowFuncSQL := b.buildWindowFunction(fieldOutput, orderByClause)
@@ -2254,7 +2264,7 @@ func (b *aggregationQueryBuilder) buildWindowFieldsQuery() string {
 	query := buildQuery("SELECT %s FROM (%s) AS base_query",
 		strings.Join(selectParts, ", "), baseQuery)
 
-	return b.appendRemainingClauses(query)
+	return b.appendRemainingClauses(query), nil
 }
 
 func (b *aggregationQueryBuilder) buildWindowOrderByClause() string {
@@ -2421,7 +2431,7 @@ func numericFrameBound(v int) string {
 	return fmt.Sprintf("%d FOLLOWING", v)
 }
 
-func (b *aggregationQueryBuilder) buildAddFieldsQuery() string {
+func (b *aggregationQueryBuilder) buildAddFieldsQuery() (string, error) {
 	baseQuery := b.baseQueryWithWhere()
 	documentExpr := "document"
 
@@ -2434,20 +2444,18 @@ func (b *aggregationQueryBuilder) buildAddFieldsQuery() string {
 
 	for _, fieldName := range fieldNames {
 		if !isValidFieldName(fieldName) {
-			slog.Warn("Skipping $addFields field with invalid name", "field", fieldName)
-			continue
+			return "", datastore.NewValidationError(
+				datastore.ProviderPostgreSQL,
+				fmt.Sprintf("$addFields field name contains invalid characters: %s", fieldName),
+				nil,
+			)
 		}
 
 		fieldExpr := b.addFields[fieldName]
 
 		fieldValueSQL, err := b.client.buildExprValue(fieldExpr)
 		if err != nil {
-			slog.Warn("Failed to build $addFields expression, skipping field",
-				"field", fieldName,
-				"expr", fieldExpr,
-				"error", err)
-
-			continue
+			return "", fmt.Errorf("failed to build $addFields expression for field %s: %w", fieldName, err)
 		}
 
 		documentExpr = fmt.Sprintf("jsonb_set(%s, '{%s}', to_jsonb(%s))",
@@ -2459,7 +2467,7 @@ func (b *aggregationQueryBuilder) buildAddFieldsQuery() string {
 	query := buildQuery("SELECT %s FROM (%s) AS subquery",
 		strings.Join(selectParts, ", "), baseQuery)
 
-	return b.appendRemainingClauses(query)
+	return b.appendRemainingClauses(query), nil
 }
 
 // adjustParameterNumbers adjusts SQL parameter numbers ($1, $2, etc.) based on offset
@@ -2780,7 +2788,11 @@ func (c *postgresqlCursor) Err() error {
 
 // buildQuery constructs a SQL query string using fmt.Sprintf. This centralizes
 // dynamic SQL construction for cases where parameterized queries cannot be used
-// (e.g., table names). Callers must ensure arguments are safe:
+// (e.g., table names).
+//
+// SAFETY: This function MUST only be called with pre-validated or internally
+// generated arguments. Never pass user-controlled strings directly. Current
+// argument categories:
 //   - Table names (c.table): validated at client construction via validateTableName.
 //   - WHERE/ORDER BY/SET clauses: built internally by buildWhereClause,
 //     buildOrderByClause, buildUpdateClause using parameterized values.
@@ -2788,7 +2800,7 @@ func (c *postgresqlCursor) Err() error {
 //     the aggregation query builder.
 //   - Field names in jsonb_set paths: validated via isValidFieldName.
 //
-//nolint:gosec // G201: see above — all arguments are either validated or internally generated
+//nolint:gosec // G201: all arguments are either validated or internally generated
 func buildQuery(format string, args ...interface{}) string {
 	return fmt.Sprintf(format, args...)
 }
