@@ -26,39 +26,38 @@ import (
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 )
 
-// nolint:cyclop // Business logic migrated from old code
 func ConfigureFieldIndexers(mgr ctrl.Manager, cfg *config.Config) error {
 	managerFieldIndexer := mgr.GetFieldIndexer()
 
 	if cfg.GPUReset.Enabled {
 		if err := managerFieldIndexer.IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName",
-			func(obj client.Object) []string {
-				p, ok := obj.(*corev1.Pod)
-				if !ok {
-					return nil
-				}
-				if p.Spec.NodeName == "" {
-					return nil
-				}
-				return []string{p.Spec.NodeName}
-			}); err != nil {
+			podNodeNameIndexer); err != nil {
 			return fmt.Errorf("failed to add indexer on Pods for spec.nodeName: %w", err)
 		}
 
 		if err := managerFieldIndexer.IndexField(context.Background(), &v1alpha1.GPUReset{}, "spec.nodeName",
-			func(obj client.Object) []string {
-				gr, ok := obj.(*v1alpha1.GPUReset)
-				if !ok {
-					return nil
-				}
-				if gr.Spec.NodeName == "" {
-					return nil
-				}
-				return []string{gr.Spec.NodeName}
-			}); err != nil {
+			gpuResetNodeNameIndexer); err != nil {
 			return fmt.Errorf("failed to add indexer on GPUResets for spec.nodeName: %w", err)
 		}
 	}
 
 	return nil
+}
+
+func podNodeNameIndexer(obj client.Object) []string {
+	p, ok := obj.(*corev1.Pod)
+	if !ok || p.Spec.NodeName == "" {
+		return nil
+	}
+
+	return []string{p.Spec.NodeName}
+}
+
+func gpuResetNodeNameIndexer(obj client.Object) []string {
+	gr, ok := obj.(*v1alpha1.GPUReset)
+	if !ok || gr.Spec.NodeName == "" {
+		return nil
+	}
+
+	return []string{gr.Spec.NodeName}
 }
