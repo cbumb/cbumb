@@ -309,7 +309,17 @@ func parseFlags() runFlags {
 		"config-bind-address", rf.configAddr,
 		"leader-elect", rf.enableLeaderElection,
 		"config", rf.configFile,
-		"secure-metrics", rf.secureMetrics)
+		"secure-metrics", rf.secureMetrics,
+		"enable-http2", rf.enableHTTP2,
+		"webhook-cert-path", rf.webhookCertPath,
+		"webhook-cert-name", rf.webhookCertName,
+		"webhook-cert-key", rf.webhookCertKey,
+		"metrics-cert-path", rf.metricsCertPath,
+		"metrics-cert-name", rf.metricsCertName,
+		"metrics-cert-key", rf.metricsCertKey,
+		"lease-duration", rf.leaseDuration,
+		"renew-deadline", rf.renewDeadline,
+		"retry-period", rf.retryPeriod)
 
 	return rf
 }
@@ -376,7 +386,7 @@ func setupTLSAndServers(rf runFlags) (serverSetup, error) {
 
 	var result serverSetup
 
-	webhookTLSOpts := tlsOpts
+	webhookTLSOpts := append([]func(*tls.Config){}, tlsOpts...)
 
 	if len(rf.webhookCertPath) > 0 {
 		slog.Info("Initializing webhook certificate watcher using provided certificates",
