@@ -1359,7 +1359,7 @@ func TestGetCollectionClient(t *testing.T) {
 
 		require.Error(t, err)
 		require.Nil(t, coll)
-		require.Contains(t, err.Error(), "invalid ping timeout")
+		require.Contains(t, err.Error(), "invalid ping timeout value")
 	})
 
 	mt.Run("invalid ping interval", func(mt *mtest.T) {
@@ -1396,7 +1396,7 @@ func TestGetCollectionClient(t *testing.T) {
 
 		require.Error(t, err)
 		require.Nil(t, coll)
-		require.Contains(t, err.Error(), "invalid ping interval")
+		require.Contains(t, err.Error(), "invalid ping interval value")
 	})
 
 	mt.Run("ping interval >= timeout", func(mt *mtest.T) {
@@ -1433,7 +1433,7 @@ func TestGetCollectionClient(t *testing.T) {
 
 		require.Error(t, err)
 		require.Nil(t, coll)
-		require.Contains(t, err.Error(), "must be less than ping timeout")
+		require.Contains(t, err.Error(), "invalid ping interval value, value must be less than ping timeout")
 	})
 }
 
@@ -1478,7 +1478,7 @@ func TestNewChangeStreamWatcher_ValidationErrors(t *testing.T) {
 		watcher, err := NewChangeStreamWatcher(ctx, mongoConfig, tokenConfig, mongo.Pipeline{})
 		require.Error(t, err)
 		require.Nil(t, watcher)
-		require.Contains(t, err.Error(), "invalid ping timeout")
+		require.Contains(t, err.Error(), "invalid ping timeout value")
 	})
 
 	t.Run("invalid ping interval", func(t *testing.T) {
@@ -1519,7 +1519,7 @@ func TestNewChangeStreamWatcher_ValidationErrors(t *testing.T) {
 		watcher, err := NewChangeStreamWatcher(ctx, mongoConfig, tokenConfig, mongo.Pipeline{})
 		require.Error(t, err)
 		require.Nil(t, watcher)
-		require.Contains(t, err.Error(), "invalid ping interval")
+		require.Contains(t, err.Error(), "invalid ping interval value")
 	})
 
 	t.Run("ping interval >= timeout", func(t *testing.T) {
@@ -1560,6 +1560,6 @@ func TestNewChangeStreamWatcher_ValidationErrors(t *testing.T) {
 		watcher, err := NewChangeStreamWatcher(ctx, mongoConfig, tokenConfig, mongo.Pipeline{})
 		require.Error(t, err)
 		require.Nil(t, watcher)
-		require.Contains(t, err.Error(), "must be less than ping timeout")
+		require.Contains(t, err.Error(), "invalid ping interval value, value must be less than ping timeout")
 	})
 }
