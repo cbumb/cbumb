@@ -76,7 +76,7 @@ func NewChangeStreamWatcher(
 
 	totalTimeout, interval, err := validatePingConfig(mongoConfig)
 	if err != nil {
-		return nil, fmt.Errorf("NewChangeStreamWatcher: %w", err)
+		return nil, err
 	}
 
 	// Confirm connectivity to the target database and collection
@@ -130,18 +130,15 @@ func NewChangeStreamWatcher(
 
 func validatePingConfig(mongoConfig MongoDBConfig) (time.Duration, time.Duration, error) {
 	if mongoConfig.TotalPingTimeoutSeconds <= 0 {
-		return 0, 0, fmt.Errorf("invalid ping timeout: %d, must be a positive integer",
-			mongoConfig.TotalPingTimeoutSeconds)
+		return 0, 0, fmt.Errorf("invalid ping timeout value")
 	}
 
 	if mongoConfig.TotalPingIntervalSeconds <= 0 {
-		return 0, 0, fmt.Errorf("invalid ping interval: %d, must be a positive integer",
-			mongoConfig.TotalPingIntervalSeconds)
+		return 0, 0, fmt.Errorf("invalid ping interval value")
 	}
 
 	if mongoConfig.TotalPingIntervalSeconds >= mongoConfig.TotalPingTimeoutSeconds {
-		return 0, 0, fmt.Errorf("invalid ping interval: %d must be less than ping timeout: %d",
-			mongoConfig.TotalPingIntervalSeconds, mongoConfig.TotalPingTimeoutSeconds)
+		return 0, 0, fmt.Errorf("invalid ping interval value, value must be less than ping timeout")
 	}
 
 	return time.Duration(mongoConfig.TotalPingTimeoutSeconds) * time.Second,
@@ -467,7 +464,7 @@ func GetCollectionClient(
 
 	totalTimeout, interval, err := validatePingConfig(mongoConfig)
 	if err != nil {
-		return nil, fmt.Errorf("GetCollectionClient: %w", err)
+		return nil, err
 	}
 
 	err = confirmConnectivityWithDBAndCollection(ctx, client, mongoConfig.Database,

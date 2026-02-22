@@ -30,7 +30,7 @@ func UnmarshalFullDocumentFromEvent[T any](event Event, result *T) error {
 	}
 
 	if err := bson.Unmarshal(bsonBytes, result); err != nil {
-		return fmt.Errorf("error unmarshaling BSON into type %T: %w", result, err)
+		return fmt.Errorf("error unmarshaling BSON for event %+v into type %T: %w", event, result, err)
 	}
 
 	return nil
@@ -103,20 +103,12 @@ func copyPtrField(dstField, srcField reflect.Value) {
 		return
 	}
 
-	dstElemKind := dstField.Type().Elem().Kind()
-	srcElemKind := srcField.Type().Elem().Kind()
-
 	dstField.Set(reflect.New(dstField.Type().Elem()))
 
-	switch {
-	case dstElemKind == reflect.Struct && srcElemKind == reflect.Struct:
+	if dstField.Type().Elem().Kind() == reflect.Struct && srcField.Type().Elem().Kind() == reflect.Struct {
 		CopyStructFields(dstField.Elem(), srcField.Elem())
-	case srcField.Elem().Type().AssignableTo(dstField.Elem().Type()):
+	} else {
 		dstField.Elem().Set(srcField.Elem())
-	case srcField.Elem().Type().ConvertibleTo(dstField.Elem().Type()):
-		dstField.Elem().Set(srcField.Elem().Convert(dstField.Elem().Type()))
-	default:
-		dstField.Set(reflect.Zero(dstField.Type()))
 	}
 }
 
@@ -125,10 +117,6 @@ func copyPtrField(dstField, srcField reflect.Value) {
 // to bridge JSON-tagged Go structs with BSON-encoded MongoDB documents.
 func UnmarshalFullDocumentToJsonTaggedStructFromEvent[T any](event Event,
 	bsonTaggedType reflect.Type, result *T) error {
-	if bsonTaggedType.Kind() == reflect.Ptr {
-		bsonTaggedType = bsonTaggedType.Elem()
-	}
-
 	bsonBytes, err := marshalFullDocument(event)
 	if err != nil {
 		return err
@@ -137,7 +125,7 @@ func UnmarshalFullDocumentToJsonTaggedStructFromEvent[T any](event Event,
 	bsonTaggedResult := reflect.New(bsonTaggedType).Interface()
 
 	if err := bson.Unmarshal(bsonBytes, bsonTaggedResult); err != nil {
-		return fmt.Errorf("error unmarshaling BSON into type %T: %w", result, err)
+		return fmt.Errorf("error unmarshaling BSON for event %+v into type %T: %w", event, result, err)
 	}
 
 	CopyStructFields(reflect.ValueOf(result).Elem(), reflect.ValueOf(bsonTaggedResult).Elem())
