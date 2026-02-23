@@ -350,6 +350,11 @@ func createTables(ctx context.Context, db *sql.DB) error {
 		)`,
 	}
 
+	timestampColumns := []string{
+		`ALTER TABLE health_events ADD COLUMN IF NOT EXISTS quarantine_finish_timestamp TIMESTAMPTZ`,
+		`ALTER TABLE health_events ADD COLUMN IF NOT EXISTS drain_finish_timestamp TIMESTAMPTZ`,
+	}
+
 	indexes := []string{
 		// Maintenance Events Indexes
 		`CREATE INDEX IF NOT EXISTS idx_maintenance_events_event_id ` +
@@ -391,6 +396,12 @@ func createTables(ctx context.Context, db *sql.DB) error {
 	for _, schema := range schemas {
 		if _, err := db.ExecContext(ctx, schema); err != nil {
 			return fmt.Errorf("failed to create schema: %w", err)
+		}
+	}
+
+	for _, timestampColumn := range timestampColumns {
+		if _, err := db.ExecContext(ctx, timestampColumn); err != nil {
+			return fmt.Errorf("failed to add timestamp column: %w", err)
 		}
 	}
 

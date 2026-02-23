@@ -469,6 +469,38 @@ func (c *MongoDBClient) UpdateDocumentStatus(
 	return nil
 }
 
+// UpdateDocumentStatusFields updates multiple status fields in a document in one operation.
+func (c *MongoDBClient) UpdateDocumentStatusFields(
+	ctx context.Context, documentID string, fields map[string]interface{},
+) error {
+	if len(fields) == 0 {
+		return nil
+	}
+
+	objectID, err := primitive.ObjectIDFromHex(documentID)
+	if err != nil {
+		return datastore.NewValidationError(
+			datastore.ProviderMongoDB,
+			fmt.Sprintf("invalid document ID %s", documentID),
+			err,
+		).WithMetadata("documentID", documentID)
+	}
+
+	filter := bson.M{"_id": objectID}
+	update := bson.M{"$set": fields}
+
+	_, err = c.mongoCol.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return datastore.NewUpdateError(
+			datastore.ProviderMongoDB,
+			fmt.Sprintf("failed to update document %s fields", documentID),
+			err,
+		).WithMetadata("documentID", documentID)
+	}
+
+	return nil
+}
+
 // isNestedFieldPath determines if the status path is a nested field path (contains ".")
 // Used to distinguish between direct field updates and struct-based updates
 func (c *MongoDBClient) isNestedFieldPath(statusPath string) bool {
@@ -519,6 +551,14 @@ func (c *MongoDBClient) buildStructFieldUpdates(basePath string, status interfac
 		if len(healthStatus.UserPodsEvictionStatus.Metadata) > 0 {
 			updateFields[basePath+".userpodsevictionstatus.metadata"] = healthStatus.UserPodsEvictionStatus.Metadata
 		}
+	}
+
+	if healthStatus.QuarantineFinishTimestamp != nil {
+		updateFields[basePath+".quarantinefinishtimestamp"] = *healthStatus.QuarantineFinishTimestamp
+	}
+
+	if healthStatus.DrainFinishTimestamp != nil {
+		updateFields[basePath+".drainfinishtimestamp"] = *healthStatus.DrainFinishTimestamp
 	}
 
 	if healthStatus.FaultRemediated != nil {

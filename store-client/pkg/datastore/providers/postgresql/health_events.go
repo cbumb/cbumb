@@ -158,10 +158,12 @@ func (p *PostgreSQLHealthEventStore) insertHealthEventRecord(
 	query := `
 		INSERT INTO health_events (
 			node_name, event_type, severity, recommended_action,
-			node_quarantined, user_pods_eviction_status, user_pods_eviction_message,
-			fault_remediated, last_remediation_timestamp, document
+			node_quarantined, quarantine_finish_timestamp,
+			user_pods_eviction_status, user_pods_eviction_message,
+			drain_finish_timestamp, fault_remediated, last_remediation_timestamp,
+			document
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 		)
 	`
 
@@ -186,8 +188,10 @@ func (p *PostgreSQLHealthEventStore) insertHealthEventRecord(
 		fields.severity,
 		fields.recommendedAction,
 		nodeQuarantined,
+		eventWithStatus.HealthEventStatus.QuarantineFinishTimestamp,
 		evictionStatus,
 		eventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Message,
+		eventWithStatus.HealthEventStatus.DrainFinishTimestamp,
 		eventWithStatus.HealthEventStatus.FaultRemediated,
 		eventWithStatus.HealthEventStatus.LastRemediationTimestamp,
 		documentJSON,
@@ -222,10 +226,12 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 		query = `
 			UPDATE health_events
 			SET node_quarantined = $1::text,
-			    user_pods_eviction_status = $2::text,
-			    user_pods_eviction_message = $3::text,
-			    fault_remediated = $4::boolean,
-			    last_remediation_timestamp = $5::timestamp,
+			    quarantine_finish_timestamp = $2::timestamp,
+			    user_pods_eviction_status = $3::text,
+			    user_pods_eviction_message = $4::text,
+			    drain_finish_timestamp = $5::timestamp,
+			    fault_remediated = $6::boolean,
+			    last_remediation_timestamp = $7::timestamp,
 			    document = jsonb_set(
 			        jsonb_set(
 			            jsonb_set(
@@ -235,21 +241,23 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			                    to_jsonb($1::text)
 			                ),
 			                '{healtheventstatus,userpodsevictionstatus,status}',
-			                to_jsonb($2::text)
+			                to_jsonb($3::text)
 			            ),
 			            '{healtheventstatus,userpodsevictionstatus,message}',
-			            to_jsonb($3::text)
+			            to_jsonb($4::text)
 			        ),
 			        '{healtheventstatus,faultremediated}',
-			        to_jsonb($4::boolean)
+			        to_jsonb($6::boolean)
 			    ),
 			    updated_at = NOW()
-			WHERE id = $6::uuid
+			WHERE id = $8::uuid
 		`
 		params = []interface{}{
 			statusStr,
+			status.QuarantineFinishTimestamp,
 			string(status.UserPodsEvictionStatus.Status),
 			status.UserPodsEvictionStatus.Message,
+			status.DrainFinishTimestamp,
 			status.FaultRemediated,
 			status.LastRemediationTimestamp,
 			id,
@@ -259,29 +267,33 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 		//nolint:dupword // SQL query uses nested jsonb_set calls
 		query = `
 			UPDATE health_events
-			SET user_pods_eviction_status = $1::text,
-			    user_pods_eviction_message = $2::text,
-			    fault_remediated = $3::boolean,
-			    last_remediation_timestamp = $4::timestamp,
+			SET quarantine_finish_timestamp = $1::timestamp,
+			    user_pods_eviction_status = $2::text,
+			    user_pods_eviction_message = $3::text,
+			    drain_finish_timestamp = $4::timestamp,
+			    fault_remediated = $5::boolean,
+			    last_remediation_timestamp = $6::timestamp,
 			    document = jsonb_set(
 			        jsonb_set(
 			            jsonb_set(
 			                document,
 			                '{healtheventstatus,userpodsevictionstatus,status}',
-			                to_jsonb($1::text)
+			                to_jsonb($2::text)
 			            ),
 			            '{healtheventstatus,userpodsevictionstatus,message}',
-			            to_jsonb($2::text)
+			            to_jsonb($3::text)
 			        ),
 			        '{healtheventstatus,faultremediated}',
-			        to_jsonb($3::boolean)
+			        to_jsonb($5::boolean)
 			    ),
 			    updated_at = NOW()
-			WHERE id = $5::uuid
+			WHERE id = $7::uuid
 		`
 		params = []interface{}{
+			status.QuarantineFinishTimestamp,
 			string(status.UserPodsEvictionStatus.Status),
 			status.UserPodsEvictionStatus.Message,
+			status.DrainFinishTimestamp,
 			status.FaultRemediated,
 			status.LastRemediationTimestamp,
 			id,
@@ -325,18 +337,22 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatusByNode(
 	query := `
 		UPDATE health_events
 		SET node_quarantined = $1,
-		    user_pods_eviction_status = $2,
-		    user_pods_eviction_message = $3,
-		    fault_remediated = $4,
-		    last_remediation_timestamp = $5,
+		    quarantine_finish_timestamp = $2,
+		    user_pods_eviction_status = $3,
+		    user_pods_eviction_message = $4,
+		    drain_finish_timestamp = $5,
+		    fault_remediated = $6,
+		    last_remediation_timestamp = $7,
 		    updated_at = NOW()
-		WHERE node_name = $6
+		WHERE node_name = $8
 	`
 
 	result, err := p.db.ExecContext(ctx, query,
 		nodeQuarantined,
+		status.QuarantineFinishTimestamp,
 		string(status.UserPodsEvictionStatus.Status),
 		status.UserPodsEvictionStatus.Message,
+		status.DrainFinishTimestamp,
 		status.FaultRemediated,
 		status.LastRemediationTimestamp,
 		nodeName,

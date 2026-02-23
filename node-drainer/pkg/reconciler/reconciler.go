@@ -533,13 +533,8 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.
 		metrics.ProcessingErrors.WithLabelValues("label_update_error", nodeName).Inc()
 	}
 
-	err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
+	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
 		nodeName, metrics.DrainStatusDrained)
-	if err != nil {
-		return fmt.Errorf("failed to update user pod eviction status: %w", err)
-	}
-
-	return nil
 }
 
 func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
@@ -579,17 +574,37 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 		return fmt.Errorf("failed to extract document ID: %w", err)
 	}
 
-	filter := map[string]any{"_id": documentID}
-	update := map[string]any{
-		"$set": map[string]any{
-			"healtheventstatus.userpodsevictionstatus": *userPodsEvictionStatus,
-		},
+	updateFields := map[string]any{
+		"healtheventstatus.userpodsevictionstatus": *userPodsEvictionStatus,
 	}
+
+	// Set DrainFinishTimestamp when drain completes successfully
+	if userPodsEvictionStatus.Status == model.StatusSucceeded ||
+		userPodsEvictionStatus.Status == model.AlreadyDrained {
+		now := time.Now().UTC()
+		updateFields["healtheventstatus.drainfinishtimestamp"] = now
+	}
+
+	filter := map[string]any{"_id": documentID}
+	update := map[string]any{"$set": updateFields}
 
 	_, err = database.UpdateDocument(ctx, filter, update)
 	if err != nil {
 		metrics.ProcessingErrors.WithLabelValues("update_status_error", nodeName).Inc()
 		return fmt.Errorf("error updating document with ID: %v, error: %w", documentID, err)
+	}
+
+	if userPodsEvictionStatus.Status == model.StatusSucceeded {
+		if healthEvent, parseErr := eventutil.ParseHealthEventFromEvent(event); parseErr == nil &&
+			healthEvent.HealthEventStatus.QuarantineFinishTimestamp != nil {
+			evictionDuration := time.Since(*healthEvent.HealthEventStatus.QuarantineFinishTimestamp).Seconds()
+
+			slog.Info("Node drainer evictionDuration is", "evictionDuration", evictionDuration)
+
+			if evictionDuration > 0 {
+				metrics.PodEvictionDuration.Observe(evictionDuration)
+			}
+		}
 	}
 
 	slog.Info("Health event status has been updated",

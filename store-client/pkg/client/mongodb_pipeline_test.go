@@ -104,14 +104,17 @@ func TestConvertAgnosticPipelineToMongo_QuarantineUpdate(t *testing.T) {
 			firstCond, ok := orArray[0].(bson.D)
 			require.True(t, ok, "First $or condition should be bson.D")
 			require.Len(t, firstCond, 1, "First condition should have 1 element")
-			require.Equal(t, "updateDescription.updatedFields", firstCond[0].Key)
+			require.Equal(t, "$expr", firstCond[0].Key)
 
-			// Verify nested structure
-			nestedDoc, ok := firstCond[0].Value.(bson.D)
-			require.True(t, ok, "Nested value should be bson.D")
-			require.Len(t, nestedDoc, 1)
-			require.Equal(t, "healtheventstatus.nodequarantined", nestedDoc[0].Key)
-			require.Equal(t, "Quarantined", nestedDoc[0].Value)
+			// $expr value is { $eq: [ <$getField(...)>, "Quarantined" ] }
+			exprDoc, ok := firstCond[0].Value.(bson.D)
+			require.True(t, ok, "$expr value should be bson.D")
+			require.Len(t, exprDoc, 1)
+			require.Equal(t, "$eq", exprDoc[0].Key)
+			eqArray, ok := exprDoc[0].Value.(bson.A)
+			require.True(t, ok, "$eq value should be bson.A")
+			require.Len(t, eqArray, 2, "$eq should have [getFieldExpr, status]")
+			require.Equal(t, "Quarantined", eqArray[1], "Second element of $eq should be status string")
 		}
 	}
 

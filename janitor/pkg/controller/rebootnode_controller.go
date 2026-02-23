@@ -222,7 +222,7 @@ func (r *RebootNodeReconciler) handleRebootInProgress(
 
 	if cspReady && kubernetesReady {
 		slog.Info("Node reached ready state post-reboot", "node", node.Name)
-		metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeReboot, time.Since(rebootNode.Status.StartTime.Time))
+		metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeReboot, time.Since(rebootNode.CreationTimestamp.Time))
 
 		return r.completeNodeReadyCheck(rebootNode, node, metav1.ConditionTrue, "Succeeded",
 			"Node reached ready state post-reboot", metrics.StatusSucceeded)
