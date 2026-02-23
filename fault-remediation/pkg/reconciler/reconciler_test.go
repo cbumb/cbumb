@@ -186,6 +186,10 @@ func (m *MockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentI
 	return nil
 }
 
+func (m *MockDatabaseClient) UpdateDocumentStatusFields(ctx context.Context, documentID string, fields map[string]interface{}) error {
+	return nil
+}
+
 func (m *MockDatabaseClient) UpsertDocument(ctx context.Context, filter interface{}, document interface{}) (*client.UpdateResult, error) {
 	return &client.UpdateResult{ModifiedCount: 1}, nil
 }

@@ -25,6 +25,9 @@ import (
 // For status changes, MongoDB only emits UPDATE events (never INSERT with status already set).
 type MongoDBPipelineBuilder struct{}
 
+// NodeQuarantined status field path in health event documents (MongoDB and PostgreSQL).
+const nodeQuarantinedStatusField = "healtheventstatus.nodequarantined"
+
 // NewMongoDBPipelineBuilder creates a new MongoDB pipeline builder
 func NewMongoDBPipelineBuilder() *MongoDBPipelineBuilder {
 	return &MongoDBPipelineBuilder{}
@@ -39,31 +42,28 @@ func NewMongoDBPipelineBuilder() *MongoDBPipelineBuilder {
 //
 // Therefore, we only need to watch for UPDATE operations with updateDescription.
 func (b *MongoDBPipelineBuilder) BuildNodeQuarantineStatusPipeline() datastore.Pipeline {
+	fieldName := nodeQuarantinedStatusField
+	getFieldExpr := datastore.D(
+		datastore.E("$getField", datastore.D(
+			datastore.E("field", fieldName),
+			datastore.E("input", "$updateDescription.updatedFields"),
+		)),
+	)
+	makeExprEq := func(status string) datastore.Document {
+		return datastore.D(datastore.E("$expr", datastore.D(
+			datastore.E("$eq", datastore.A(getFieldExpr, status)),
+		)))
+	}
+
 	return datastore.ToPipeline(
 		datastore.D(
 			datastore.E("$match", datastore.D(
 				datastore.E("operationType", "update"),
 				datastore.E("$or", datastore.A(
-					datastore.D(
-						datastore.E("updateDescription.updatedFields", datastore.D(
-							datastore.E("healtheventstatus.nodequarantined", string(model.Quarantined)),
-						)),
-					),
-					datastore.D(
-						datastore.E("updateDescription.updatedFields", datastore.D(
-							datastore.E("healtheventstatus.nodequarantined", string(model.AlreadyQuarantined)),
-						)),
-					),
-					datastore.D(
-						datastore.E("updateDescription.updatedFields", datastore.D(
-							datastore.E("healtheventstatus.nodequarantined", string(model.UnQuarantined)),
-						)),
-					),
-					datastore.D(
-						datastore.E("updateDescription.updatedFields", datastore.D(
-							datastore.E("healtheventstatus.nodequarantined", string(model.Cancelled)),
-						)),
-					),
+					makeExprEq(string(model.Quarantined)),
+					makeExprEq(string(model.AlreadyQuarantined)),
+					makeExprEq(string(model.UnQuarantined)),
+					makeExprEq(string(model.Cancelled)),
 				)),
 			)),
 		),

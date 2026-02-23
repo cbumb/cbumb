@@ -131,6 +131,15 @@ var (
 		},
 	)
 
+	// Node Quarantine Duration Metrics
+	NodeQuarantineDuration = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "fault_quarantine_node_quarantine_duration_seconds",
+			Help:    "Time from health event generation to node quarantine completion.",
+			Buckets: prometheus.DefBuckets,
+		},
+	)
+
 	// Event Processing Metrics
 	EventBacklogSize = promauto.NewGauge(
 		prometheus.GaugeOpts{

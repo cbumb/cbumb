@@ -281,6 +281,106 @@ func (c *PostgreSQLClient) UpdateDocumentStatus(
 	return nil
 }
 
+// UpdateDocumentStatusFields updates multiple status fields in a document in one operation.
+// Keys in fields are dot-notation paths (e.g. "healtheventstatus.nodequarantined").
+func (c *PostgreSQLClient) UpdateDocumentStatusFields(
+	ctx context.Context, documentID string, fields map[string]interface{},
+) error {
+	if len(fields) == 0 {
+		return nil
+	}
+
+	var setClauses []string
+
+	var args []interface{}
+
+	paramCount := 1
+
+	var nodeQuarantinedVal interface{}
+
+	// Iterate in sorted order for deterministic nested jsonb_set
+	paths := make([]string, 0, len(fields))
+
+	for path := range fields {
+		paths = append(paths, path)
+	}
+
+	sort.Strings(paths)
+
+	// Build nested jsonb_set for document
+	setExpression := jsonbDocumentColumn
+
+	for _, path := range paths {
+		value := fields[path]
+
+		parts := strings.Split(path, ".")
+		jsonbPath := "{" + strings.Join(parts, ",") + "}"
+
+		valueJSON, err := json.Marshal(value)
+		if err != nil {
+			return datastore.NewSerializationError(
+				datastore.ProviderPostgreSQL,
+				fmt.Sprintf("failed to marshal value for field %s", path),
+				err,
+			)
+		}
+
+		setExpression = fmt.Sprintf("jsonb_set(%s, '%s', $%d)", setExpression, jsonbPath, paramCount)
+
+		args = append(args, string(valueJSON))
+
+		if path == "healtheventstatus.nodequarantined" {
+			nodeQuarantinedVal = value
+		}
+
+		paramCount++
+	}
+
+	setClauses = append(setClauses, fmt.Sprintf("%s = %s", jsonbDocumentColumn, setExpression))
+
+	if nodeQuarantinedVal != nil {
+		setClauses = append(setClauses, fmt.Sprintf("node_quarantined = $%d", paramCount))
+		args = append(args, nodeQuarantinedVal)
+		paramCount++
+	}
+
+	args = append(args, documentID)
+
+	//nolint:gosec // G201: table name from config
+	query := fmt.Sprintf(
+		"UPDATE %s SET %s, updated_at = NOW() WHERE id = $%d",
+		c.table, strings.Join(setClauses, ", "), paramCount,
+	)
+
+	result, err := c.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return datastore.NewUpdateError(
+			datastore.ProviderPostgreSQL,
+			fmt.Sprintf("failed to update document %s fields", documentID),
+			err,
+		)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return datastore.NewUpdateError(
+			datastore.ProviderPostgreSQL,
+			"failed to get rows affected",
+			err,
+		)
+	}
+
+	if rowsAffected == 0 {
+		return datastore.NewDocumentNotFoundError(
+			datastore.ProviderPostgreSQL,
+			fmt.Sprintf("document not found: %s", documentID),
+			nil,
+		)
+	}
+
+	return nil
+}
+
 // UpdateDocument performs a general update operation
 func (c *PostgreSQLClient) UpdateDocument(
 	ctx context.Context, filter interface{}, update interface{},

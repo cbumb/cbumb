@@ -178,7 +178,7 @@ func (r *RebootNodeReconciler) reconcileHelper(ctx context.Context, rebootNode *
 
 			// Metrics and final result
 			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeReboot, metrics.StatusSucceeded, node.Name)
-			metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeReboot, time.Since(rebootNode.Status.StartTime.Time))
+			metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeReboot, time.Since(rebootNode.CreationTimestamp.Time))
 
 			result = ctrl.Result{} // Don't requeue on success
 		} else if time.Since(rebootNode.Status.StartTime.Time) > r.getRebootTimeout() {
