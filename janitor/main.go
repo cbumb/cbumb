@@ -15,7 +15,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -356,16 +355,14 @@ func setupConfigServer(cfg *config.Config, configAddr string) (server.Server, in
 	}
 
 	configHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		var buf bytes.Buffer
-		if err := json.NewEncoder(&buf).Encode(cfg); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+
+		if err := json.NewEncoder(w).Encode(cfg); err != nil {
 			slog.Error("Failed to encode configuration as JSON", "error", err)
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 
 			return
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(buf.Bytes()) //nolint:errcheck // best-effort write to HTTP response
 	})
 
 	configServer := server.NewServer(
@@ -394,7 +391,7 @@ func setupTLSAndServers(rf runFlags) (serverSetup, error) {
 			"webhook-cert-name", rf.webhookCertName,
 			"webhook-cert-key", rf.webhookCertKey)
 
-		w, err := certwatcher.New(
+		webhookCertWatcher, err := certwatcher.New(
 			filepath.Join(rf.webhookCertPath, rf.webhookCertName),
 			filepath.Join(rf.webhookCertPath, rf.webhookCertKey),
 		)
@@ -404,9 +401,11 @@ func setupTLSAndServers(rf runFlags) (serverSetup, error) {
 			return serverSetup{}, fmt.Errorf("failed to initialize webhook certificate watcher: %w", err)
 		}
 
-		result.webhookCertWatcher = w
+		result.webhookCertWatcher = webhookCertWatcher
 
-		webhookTLSOpts = append(webhookTLSOpts, func(c *tls.Config) { c.GetCertificate = w.GetCertificate })
+		webhookTLSOpts = append(webhookTLSOpts, func(c *tls.Config) {
+			c.GetCertificate = webhookCertWatcher.GetCertificate
+		})
 	}
 
 	result.webhookServer = webhook.NewServer(webhook.Options{TLSOpts: webhookTLSOpts})
@@ -427,7 +426,7 @@ func setupTLSAndServers(rf runFlags) (serverSetup, error) {
 			"metrics-cert-name", rf.metricsCertName,
 			"metrics-cert-key", rf.metricsCertKey)
 
-		m, err := certwatcher.New(
+		metricsCertWatcher, err := certwatcher.New(
 			filepath.Join(rf.metricsCertPath, rf.metricsCertName),
 			filepath.Join(rf.metricsCertPath, rf.metricsCertKey),
 		)
@@ -437,9 +436,9 @@ func setupTLSAndServers(rf runFlags) (serverSetup, error) {
 			return serverSetup{}, fmt.Errorf("failed to initialize metrics certificate watcher: %w", err)
 		}
 
-		result.metricsCertWatcher = m
+		result.metricsCertWatcher = metricsCertWatcher
 		result.metricsServerOptions.TLSOpts = append(result.metricsServerOptions.TLSOpts,
-			func(c *tls.Config) { c.GetCertificate = m.GetCertificate })
+			func(c *tls.Config) { c.GetCertificate = metricsCertWatcher.GetCertificate })
 	}
 
 	return result, nil
