@@ -6,7 +6,7 @@ toolchain go1.25.3
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/caarlos0/env/v11 v11.3.1
+	github.com/caarlos0/env/v11 v11.4.0
 	github.com/go-logr/logr v1.4.3
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.11.2
