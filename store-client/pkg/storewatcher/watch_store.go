@@ -464,7 +464,7 @@ func GetCollectionClient(
 
 	totalTimeout, interval, err := validatePingConfig(mongoConfig)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("NewChangeStreamWatcher: %w", err)
 	}
 
 	err = confirmConnectivityWithDBAndCollection(ctx, client, mongoConfig.Database,
