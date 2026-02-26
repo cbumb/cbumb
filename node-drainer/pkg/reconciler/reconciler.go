@@ -331,6 +331,7 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 		return fmt.Errorf("waiting for retry delay: %v", action.WaitDelay)
 
 	case evaluator.ActionCreateCR:
+		r.updateNodeDrainStatus(ctx, nodeName, &healthEvent, true)
 		return r.executeCustomDrain(ctx, action, healthEvent, event, database, action.PartialDrainEntity)
 
 	case evaluator.ActionEvictImmediate:
@@ -352,7 +353,7 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 
 		err := r.executeMarkAlreadyDrained(ctx, healthEvent, event, database, action.Status)
 		if err == nil {
-			r.deleteCustomDrainCRIfEnabled(ctx, nodeName, eventID)
+			r.deleteCustomDrainCRIfEnabled(ctx, nodeName, event)
 		}
 
 		return err
@@ -773,6 +774,8 @@ func (r *Reconciler) handleCancelledEvent(ctx context.Context, nodeName string,
 		return fmt.Errorf("failed to update MongoDB status for cancelled event on node %s: %w", nodeName, err)
 	}
 
+	r.deleteCustomDrainCRIfEnabled(ctx, nodeName, event)
+
 	if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		nodeName, statemanager.DrainingLabelValue, true); err != nil {
 		slog.Error("Failed to remove draining label for cancelled event",
@@ -838,8 +841,17 @@ func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.D
 	return fmt.Errorf("waiting for custom drain CR to complete: %s", crName)
 }
 
-func (r *Reconciler) deleteCustomDrainCRIfEnabled(ctx context.Context, nodeName, eventID string) {
+func (r *Reconciler) deleteCustomDrainCRIfEnabled(ctx context.Context, nodeName string, event datastore.Event) {
 	if !r.Config.TomlConfig.CustomDrain.Enabled {
+		return
+	}
+
+	eventID, err := utils.ExtractDocumentID(event)
+	if err != nil {
+		slog.Warn("Failed to extract document ID for custom drain CR deletion",
+			"node", nodeName,
+			"error", err)
+
 		return
 	}
 
