@@ -38,8 +38,8 @@ const (
 )
 
 type OperationStatus struct {
-	Status  Status `bson:"status"`
-	Message string `bson:"message,omitempty"`
+	Status  Status `bson:"status" json:"status"`
+	Message string `bson:"message,omitempty" json:"message,omitempty"`
 }
 
 type HealthEventStatus struct {
