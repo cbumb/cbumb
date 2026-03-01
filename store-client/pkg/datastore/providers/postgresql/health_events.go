@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -36,6 +37,16 @@ type PostgreSQLHealthEventStore struct {
 // NewPostgreSQLHealthEventStore creates a new PostgreSQL health event store
 func NewPostgreSQLHealthEventStore(db *sql.DB) *PostgreSQLHealthEventStore {
 	return &PostgreSQLHealthEventStore{db: db}
+}
+
+// formatTimeRFC3339 formats t as RFC3339Nano with "Z" for JSONB document storage.
+// Ensures timestamps parse correctly in Go (RFC3339) and other consumers; PostgreSQL to_jsonb(timestamp) can omit "Z".
+func formatTimeRFC3339(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 // InsertHealthEvents inserts health events into the database
@@ -221,9 +232,12 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 
 	var params []interface{}
 
-	if status.NodeQuarantined != nil {
-		// NodeQuarantined has a value - update it in both column and JSONB
+	switch {
+	case status.NodeQuarantined != nil:
+		// NodeQuarantined has a value - update it in both column and JSONB.
+		// Store lastremediationtimestamp in document as RFC3339 with "Z" for parseable JSON.
 		statusStr := string(*status.NodeQuarantined)
+		lastRemediationRFC3339 := formatTimeRFC3339(status.LastRemediationTimestamp)
 		//nolint:dupword // SQL query uses nested jsonb_set calls
 		query = `
 			UPDATE health_events
@@ -238,18 +252,22 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			        jsonb_set(
 			            jsonb_set(
 			                jsonb_set(
-			                    document,
-			                    '{healtheventstatus,nodequarantined}',
-			                    to_jsonb($1::text)
+			                    jsonb_set(
+			                        document,
+			                        '{healtheventstatus,nodequarantined}',
+			                        to_jsonb($1::text)
+			                    ),
+			                    '{healtheventstatus,userpodsevictionstatus,status}',
+			                    to_jsonb($3::text)
 			                ),
-			                '{healtheventstatus,userpodsevictionstatus,status}',
-			                to_jsonb($3::text)
+			                '{healtheventstatus,userpodsevictionstatus,message}',
+			                to_jsonb($4::text)
 			            ),
-			            '{healtheventstatus,userpodsevictionstatus,message}',
-			            to_jsonb($4::text)
+			            '{healtheventstatus,faultremediated}',
+			            to_jsonb($6::boolean)
 			        ),
-			        '{healtheventstatus,faultremediated}',
-			        to_jsonb($6::boolean)
+			        '{healtheventstatus,lastremediationtimestamp}',
+			        to_jsonb($9::text)
 			    ),
 			    updated_at = NOW()
 			WHERE id = $8::uuid
@@ -263,9 +281,12 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			status.FaultRemediated,
 			status.LastRemediationTimestamp,
 			id,
+			lastRemediationRFC3339,
 		}
-	} else {
-		// NodeQuarantined is NULL - only update other fields, skip nodequarantined in JSONB
+	case status.UserPodsEvictionStatus.Status != "":
+		// NodeQuarantined is NULL but UserPodsEvictionStatus is set - update eviction + remediation fields only.
+		// Store lastremediationtimestamp in document as RFC3339 with "Z" for parseable JSON.
+		lastRemediationRFC3339 := formatTimeRFC3339(status.LastRemediationTimestamp)
 		//nolint:dupword // SQL query uses nested jsonb_set calls
 		query = `
 			UPDATE health_events
@@ -278,15 +299,19 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			    document = jsonb_set(
 			        jsonb_set(
 			            jsonb_set(
-			                document,
-			                '{healtheventstatus,userpodsevictionstatus,status}',
-			                to_jsonb($2::text)
+			                jsonb_set(
+			                    document,
+			                    '{healtheventstatus,userpodsevictionstatus,status}',
+			                    to_jsonb($2::text)
+			                ),
+			                '{healtheventstatus,userpodsevictionstatus,message}',
+			                to_jsonb($3::text)
 			            ),
-			            '{healtheventstatus,userpodsevictionstatus,message}',
-			            to_jsonb($3::text)
+			            '{healtheventstatus,faultremediated}',
+			            to_jsonb($5::boolean)
 			        ),
-			        '{healtheventstatus,faultremediated}',
-			        to_jsonb($5::boolean)
+			        '{healtheventstatus,lastremediationtimestamp}',
+			        to_jsonb($8::text)
 			    ),
 			    updated_at = NOW()
 			WHERE id = $7::uuid
@@ -298,6 +323,35 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 			status.DrainFinishTimestamp,
 			status.FaultRemediated,
 			status.LastRemediationTimestamp,
+			id,
+			lastRemediationRFC3339,
+		}
+	default:
+		// NodeQuarantined is NULL and UserPodsEvictionStatus is empty (e.g. FR-only update):
+		// only update fault_remediated and last_remediation_timestamp, preserve existing eviction status.
+		// Store lastremediationtimestamp in document as RFC3339 with "Z" so JSON unmarshal (Go/MongoDB consumers) succeeds.
+		lastRemediationRFC3339 := formatTimeRFC3339(status.LastRemediationTimestamp)
+		//nolint:dupword // SQL query uses nested jsonb_set
+		query = `
+			UPDATE health_events
+			SET fault_remediated = $1::boolean,
+			    last_remediation_timestamp = $2::timestamp,
+			    document = jsonb_set(
+			        jsonb_set(
+			            document,
+			            '{healtheventstatus,faultremediated}',
+			            to_jsonb($1::boolean)
+			        ),
+			        '{healtheventstatus,lastremediationtimestamp}',
+			        to_jsonb($3::text)
+			    ),
+			    updated_at = NOW()
+			WHERE id = $4::uuid
+		`
+		params = []interface{}{
+			status.FaultRemediated,
+			status.LastRemediationTimestamp,
+			lastRemediationRFC3339,
 			id,
 		}
 	}

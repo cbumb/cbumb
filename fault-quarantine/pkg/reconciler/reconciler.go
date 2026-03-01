@@ -752,6 +752,9 @@ func (r *Reconciler) prepareAnnotations(
 
 		labelsMap.LoadOrStore(r.cordonedByLabelKey, common.ServiceName)
 		labelsMap.Store(r.cordonedTimestampLabelKey, time.Now().UTC().Format("2006-01-02T15-04-05Z"))
+	}
+
+	if len(taintsToBeApplied) > 0 || isCordoned.Load() {
 		labelsMap.Store(string(statemanager.NVSentinelStateLabelKey), string(statemanager.QuarantinedLabelValue))
 	}
 
