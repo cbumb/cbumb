@@ -313,7 +313,6 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 	return r.executeAction(ctx, actionResult, healthEventWithStatus, event, database, eventID)
 }
 
-//nolint:cyclop // executeAction is a clean dispatcher - complexity comes from number of actions, not nesting
 func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainActionResult,
 	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore, eventID string) error {
 	nodeName := healthEvent.HealthEvent.NodeName
@@ -349,14 +348,7 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 		return r.executeCheckCompletion(ctx, action, healthEvent, action.PartialDrainEntity)
 
 	case evaluator.ActionMarkAlreadyDrained:
-		r.clearEventStatus(eventID, nodeName)
-
-		err := r.executeMarkAlreadyDrained(ctx, healthEvent, event, database, action.Status)
-		if err == nil {
-			r.deleteCustomDrainCRIfEnabled(ctx, nodeName, event)
-		}
-
-		return err
+		return r.handleMarkAlreadyDrained(ctx, eventID, nodeName, healthEvent, event, database, action.Status)
 
 	case evaluator.ActionUpdateStatus:
 		r.clearEventStatus(eventID, nodeName)
@@ -365,6 +357,19 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 	default:
 		return fmt.Errorf("unknown action: %s", action.Action.String())
 	}
+}
+
+func (r *Reconciler) handleMarkAlreadyDrained(ctx context.Context, eventID, nodeName string,
+	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore,
+	status model.Status) error {
+	r.clearEventStatus(eventID, nodeName)
+
+	err := r.executeMarkAlreadyDrained(ctx, healthEvent, event, database, status)
+	if err == nil {
+		r.deleteCustomDrainCRIfEnabled(ctx, nodeName, event)
+	}
+
+	return err
 }
 
 func (r *Reconciler) executeSkip(ctx context.Context,
@@ -645,13 +650,16 @@ func (r *Reconciler) parseHealthEventFromEvent(event datastore.Event,
 	return healthEventWithStatus, nil
 }
 
+// HandleCancellation processes a cancellation status for a specific event or node.
+// For Cancelled status, it marks the specific event as cancelled.
+// For UnQuarantined status, it sets a node-level cancellation flag affecting all events.
+// Other known statuses are logged and ignored; unknown statuses trigger a warning.
 func (r *Reconciler) HandleCancellation(eventID string, nodeName string, status model.Status) {
 	r.nodeEventsMapMu.Lock()
 	defer r.nodeEventsMapMu.Unlock()
 
 	slog.Debug("HandleCancellation called", "node", nodeName, "eventID", eventID, "status", status)
 
-	//nolint:exhaustive // we don't need to handle other statuses
 	switch status {
 	case model.Cancelled:
 		if r.nodeEventsMap[nodeName] == nil {
@@ -673,6 +681,12 @@ func (r *Reconciler) HandleCancellation(eventID string, nodeName string, status 
 				slog.Info("Marked event as cancelled for node", "node", nodeName, "eventID", evtID)
 			}
 		}
+	case model.StatusNotStarted, model.StatusInProgress, model.StatusFailed,
+		model.StatusSucceeded, model.AlreadyDrained, model.Quarantined,
+		model.AlreadyQuarantined:
+		slog.Debug("No cancellation action required for status", "node", nodeName, "status", status)
+	default:
+		slog.Warn("Unknown cancellation status", "node", nodeName, "eventID", eventID, "status", status)
 	}
 
 	slog.Debug("Cancellation processed", "node", nodeName, "eventID", eventID)
