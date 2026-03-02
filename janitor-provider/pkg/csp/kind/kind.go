@@ -169,8 +169,10 @@ func (c *Client) deleteAndVerifyContainer(
 		return fmt.Errorf("failed to verify container deletion: %w", err)
 	}
 
-	if strings.Contains(string(output), containerName) {
-		return fmt.Errorf("container %s still exists after deletion attempt", containerName)
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if line == containerName {
+			return fmt.Errorf("container %s still exists after deletion attempt", containerName)
+		}
 	}
 
 	return nil

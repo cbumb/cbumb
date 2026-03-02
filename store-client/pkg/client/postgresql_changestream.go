@@ -383,26 +383,41 @@ func (w *PostgreSQLChangeStreamWatcher) matchesPipeline(entry *postgresqlEvent) 
 	}
 
 	for _, stage := range w.pipeline {
-		matchFilter, ok := stage["$match"]
-		if !ok {
-			continue
-		}
-
-		matchMap, ok := matchFilter.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		if opType, ok := matchMap["operationType"]; ok {
-			expectedOps := mapOperationTypes(opType)
-			if len(expectedOps) > 0 && !slices.Contains(expectedOps, entry.operation) {
-				return false
-			}
-		}
-
-		if entry.newValues != nil && !w.matchesFilters(matchMap, entry.newValues) {
+		if !w.matchesStage(stage, entry) {
 			return false
 		}
+	}
+
+	return true
+}
+
+func (w *PostgreSQLChangeStreamWatcher) matchesStage(
+	stage map[string]interface{}, entry *postgresqlEvent,
+) bool {
+	matchFilter, ok := stage["$match"]
+	if !ok {
+		return true
+	}
+
+	matchMap, ok := matchFilter.(map[string]interface{})
+	if !ok {
+		return true
+	}
+
+	if opType, ok := matchMap["operationType"]; ok {
+		expectedOps := mapOperationTypes(opType)
+		if len(expectedOps) == 0 || !slices.Contains(expectedOps, entry.operation) {
+			return false
+		}
+	}
+
+	values := entry.newValues
+	if values == nil {
+		values = entry.oldValues
+	}
+
+	if values == nil || !w.matchesFilters(matchMap, values) {
+		return false
 	}
 
 	return true

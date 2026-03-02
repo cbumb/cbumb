@@ -415,58 +415,73 @@ func (c *PostgreSQLDatabaseClient) convertUpdateToSetClause(
 		return setClause, updateArgs, nil
 	}
 
-	// Try to convert update to map[string]any if it's a compatible type
-	// This handles bson.M (primitive.M) which is essentially map[string]any
-	// MongoDB builder factory may be registered as the default, so we may receive MongoDB types
-	updateMap := c.convertFilterToMap(update)
-	if updateMap == nil {
-		return "", nil, fmt.Errorf("unsupported update type: %T", update)
+	setFields, err := c.resolveSetFields(update)
+	if err != nil {
+		return "", nil, err
 	}
 
-	// Handle MongoDB-style update with $set operator
-	var setFields map[string]interface{}
-
-	if setOp, hasSet := updateMap["$set"]; hasSet {
-		// The $set value might also be a bson.M, so use convertFilterToMap
-		setFields = c.convertFilterToMap(setOp)
-		if setFields == nil {
-			return "", nil, fmt.Errorf("$set value must be a map type, got: %T", setOp)
-		}
-
-		slog.Debug("Found $set operator", "setFields", setFields)
-	} else {
-		// Direct field updates (no $set operator)
-		setFields = updateMap
-		slog.Debug("Direct field updates (no $set)", "setFields", setFields)
-	}
-
-	// Build SET clause from fields
 	builder := query.NewUpdate()
 
 	for key, value := range setFields {
 		slog.Debug("Adding field to UpdateBuilder", "key", key, "value", value, "valueType", fmt.Sprintf("%T", value))
 		builder.Set(key, value)
-
-		// For health_events table, also update denormalized columns to keep them in sync
-		// This ensures PostgreSQL changelog triggers capture the correct values
-		if c.tableName == healthEventsTable && key == nodeQuarantinedStatusPath {
-			slog.Debug("Also updating denormalized node_quarantined column", "value", value)
-			builder.Set("node_quarantined", value)
-		}
-
-		// For maintenance_events table, when updating denormalized columns (like status),
-		// also update the corresponding field in the JSONB document to keep them in sync.
-		// This is critical because queries may filter on either the column or the document field.
-		if c.tableName == maintenanceEventTableName && key == "status" {
-			slog.Debug("Also updating document.status field to keep in sync with column", "value", value)
-			// Use a special key format that ToSQL will recognize as a document field update
-			builder.SetDocumentField("status", value)
-		}
+		c.syncDenormalizedColumns(builder, key, value)
 	}
 
 	setClause, updateArgs := builder.ToSQL()
 
 	return setClause, updateArgs, nil
+}
+
+func (c *PostgreSQLDatabaseClient) resolveSetFields(
+	update interface{},
+) (map[string]interface{}, error) {
+	updateMap := c.convertFilterToMap(update)
+	if updateMap == nil {
+		return nil, fmt.Errorf("unsupported update type: %T", update)
+	}
+
+	setOp, hasSet := updateMap["$set"]
+	if !hasSet {
+		slog.Debug("Direct field updates (no $set)", "setFields", updateMap)
+
+		return updateMap, nil
+	}
+
+	for key := range updateMap {
+		if key != "$set" && strings.HasPrefix(key, "$") {
+			return nil, fmt.Errorf("unsupported MongoDB update operator %q: only $set is supported", key)
+		}
+	}
+
+	setFields := c.convertFilterToMap(setOp)
+	if setFields == nil {
+		return nil, fmt.Errorf("$set value must be a map type, got: %T", setOp)
+	}
+
+	slog.Debug("Found $set operator", "setFields", setFields)
+
+	return setFields, nil
+}
+
+// syncDenormalizedColumns updates denormalized columns that must stay in sync with JSONB document fields.
+func (c *PostgreSQLDatabaseClient) syncDenormalizedColumns(
+	builder *query.UpdateBuilder, key string, value interface{},
+) {
+	// For health_events table, also update denormalized columns to keep them in sync
+	// This ensures PostgreSQL changelog triggers capture the correct values
+	if c.tableName == healthEventsTable && key == nodeQuarantinedStatusPath {
+		slog.Debug("Also updating denormalized node_quarantined column", "value", value)
+		builder.Set("node_quarantined", value)
+	}
+
+	// For maintenance_events table, when updating denormalized columns (like status),
+	// also update the corresponding field in the JSONB document to keep them in sync.
+	// This is critical because queries may filter on either the column or the document field.
+	if c.tableName == maintenanceEventTableName && key == "status" {
+		slog.Debug("Also updating document.status field to keep in sync with column", "value", value)
+		builder.SetDocumentField("status", value)
+	}
 }
 
 // updateDocuments is the internal implementation for update operations
@@ -649,7 +664,15 @@ func isDescending(direction interface{}) bool {
 	switch v := direction.(type) {
 	case int:
 		return v < 0
+	case int8:
+		return v < 0
+	case int16:
+		return v < 0
+	case int32:
+		return v < 0
 	case int64:
+		return v < 0
+	case float32:
 		return v < 0
 	case float64:
 		return v < 0
@@ -849,7 +872,7 @@ func (c *PostgreSQLDatabaseClient) FindOne(
 
 		whereClause, args, err = c.resolveFilterMapForFind(filter)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("resolving filter for FindOne: %w", err)
 		}
 	}
 
@@ -898,7 +921,7 @@ func (c *PostgreSQLDatabaseClient) Find(
 
 		whereClause, args, err = c.resolveFilterMapForFind(filter)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("resolving filter for Find: %w", err)
 		}
 	}
 

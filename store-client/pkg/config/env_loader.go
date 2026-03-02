@@ -192,12 +192,12 @@ func NewDatabaseConfigWithCollection(
 	// Load required MongoDB environment variables
 	connectionURI, err := getRequiredEnv(EnvMongoDBURI)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load MONGODB_URI: %w", err)
 	}
 
 	databaseName, err := getRequiredEnv(EnvMongoDBDatabaseName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load MONGODB_DATABASE_NAME: %w", err)
 	}
 
 	// Determine which collection environment variable to use
@@ -243,17 +243,17 @@ func NewDatabaseConfigWithCollection(
 func newPostgreSQLCompatibleConfig(certMountPath, tableEnvVar, defaultTable string) (DatabaseConfig, error) {
 	host, err := getRequiredEnv("DATASTORE_HOST")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load DATASTORE_HOST: %w", err)
 	}
 
 	database, err := getRequiredEnv("DATASTORE_DATABASE")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load DATASTORE_DATABASE: %w", err)
 	}
 
 	username, err := getRequiredEnv("DATASTORE_USERNAME")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load DATASTORE_USERNAME: %w", err)
 	}
 
 	port := getEnvWithDefault("DATASTORE_PORT", "5432")
@@ -436,12 +436,12 @@ func getPositiveIntEnvVarWithFallback(preferredName, legacyName string, defaultV
 func TokenConfigFromEnv(clientName string) (TokenConfig, error) {
 	tokenDatabase, err := getRequiredEnv(EnvMongoDBDatabaseName)
 	if err != nil {
-		return TokenConfig{}, err
+		return TokenConfig{}, fmt.Errorf("failed to load MONGODB_DATABASE_NAME: %w", err)
 	}
 
 	tokenCollection, err := getRequiredEnv(EnvMongoDBTokenCollectionName)
 	if err != nil {
-		return TokenConfig{}, err
+		return TokenConfig{}, fmt.Errorf("failed to load MONGODB_TOKEN_COLLECTION_NAME: %w", err)
 	}
 
 	return TokenConfig{
