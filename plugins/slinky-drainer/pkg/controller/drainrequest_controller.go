@@ -44,8 +44,16 @@ const (
 	annotationKey                    = "nodeset.slinky.slurm.net/node-cordon-reason"
 	annotationPrefix                 = "[J] [NVSentinel]"
 	nvsentinelStateLabelKey          = "dgxc.nvidia.com/nvsentinel-state"
-	remediationSucceededValue        = "remediation-succeeded"
 	drainRequestFinalizer            = "nvsentinel.nvidia.com/slinky-drainer"
+
+	// Slurm base-state conditions that indicate the node still has running work.
+	// A pod is only considered fully drained when SlurmNodeStateDrain is True
+	// and none of these busy-state conditions are True.
+	// Ref: https://github.com/SlinkyProject/slurm-operator/blob/main/pkg/conditions/conditions.go
+	slurmNodeStateAllocatedConditionType  = "SlurmNodeStateAllocated"
+	slurmNodeStateMixedConditionType      = "SlurmNodeStateMixed"
+	slurmNodeStateCompletingConditionType = "SlurmNodeStateCompleting"
+	slurmNodeStateUndrainConditionType    = "SlurmNodeStateUndrain"
 )
 
 type DrainRequestReconciler struct {
@@ -101,9 +109,9 @@ func (r *DrainRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return r.markDrainComplete(ctx, drainReq, "NoPods", "No Slinky pods found on node")
 	}
 
-	allReady, notReadyPods := r.checkPodsReadyForDrain(pods)
-	if !allReady {
-		slog.Info("Waiting for pods to be ready for drain",
+	allDrained, notReadyPods := r.checkPodsFullyDrained(pods)
+	if !allDrained {
+		slog.Info("Waiting for pods to be fully drained",
 			"drainrequest", req.NamespacedName,
 			"total", len(pods),
 			"notReady", len(notReadyPods),
@@ -290,11 +298,15 @@ func (r *DrainRequestReconciler) getSlinkyPods(ctx context.Context, nodeName str
 	return podList.Items, nil
 }
 
-func (r *DrainRequestReconciler) checkPodsReadyForDrain(pods []corev1.Pod) (bool, []string) {
+func (r *DrainRequestReconciler) checkPodsFullyDrained(pods []corev1.Pod) (bool, []string) {
 	var notReady []string
 
 	for _, pod := range pods {
-		if !hasSlurmDrainCondition(&pod) {
+		if !isPodReady(&pod) {
+			continue
+		}
+
+		if !isPodDrained(&pod) {
 			notReady = append(notReady, pod.Name)
 		}
 	}
@@ -302,9 +314,38 @@ func (r *DrainRequestReconciler) checkPodsReadyForDrain(pods []corev1.Pod) (bool
 	return len(notReady) == 0, notReady
 }
 
-func hasSlurmDrainCondition(pod *corev1.Pod) bool {
+func isPodReady(pod *corev1.Pod) bool {
 	for _, cond := range pod.Status.Conditions {
-		if cond.Type == slurmNodeStateDrainConditionType && cond.Status == corev1.ConditionTrue {
+		if cond.Type == corev1.PodReady {
+			return cond.Status == corev1.ConditionTrue
+		}
+	}
+
+	return false
+}
+
+// isPodDrained returns true when the Slurm node behind this pod has the DRAIN
+// flag set, the UNDRAIN flag is NOT set, and no work is running. This mirrors
+// the Slinky operator's IsNodeDrained logic so we only delete pods after all
+// Slurm jobs have finished.
+func isPodDrained(pod *corev1.Pod) bool {
+	return isNodeDrain(pod) && !isPodBusy(pod)
+}
+
+func isNodeDrain(pod *corev1.Pod) bool {
+	return hasPodCondition(pod, slurmNodeStateDrainConditionType) &&
+		!hasPodCondition(pod, slurmNodeStateUndrainConditionType)
+}
+
+func isPodBusy(pod *corev1.Pod) bool {
+	return hasPodCondition(pod, slurmNodeStateAllocatedConditionType) ||
+		hasPodCondition(pod, slurmNodeStateMixedConditionType) ||
+		hasPodCondition(pod, slurmNodeStateCompletingConditionType)
+}
+
+func hasPodCondition(pod *corev1.Pod, condType corev1.PodConditionType) bool {
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == condType && cond.Status == corev1.ConditionTrue {
 			return true
 		}
 	}
