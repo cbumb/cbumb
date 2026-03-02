@@ -70,7 +70,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	configs, err := loadConfigurations(params)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load configurations: %w", err)
 	}
 
 	pipeline := config.NewQuarantinePipeline()
@@ -87,14 +87,14 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	clientSet, restConfig, err := initializeKubernetesClient(params.KubeconfigPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to initialize kubernetes client: %w", err)
 	}
 
 	slog.Info("Successfully initialized kubernetes client")
 
 	dynamicClient, restMapper, err := initializeDynamicClientAndMapper(restConfig)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to initialize dynamic client and mapper: %w", err)
 	}
 
 	informersInstance, err := initializeInformers(clientSet, &configs.tomlCfg.NotReadyTimeoutMinutes, params.DryRun)
@@ -128,7 +128,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	dsComponents, err := initializeDatastoreComponents(ctx, ds, clientTokenConfig.ClientName, pipeline)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to initialize datastore components: %w", err)
 	}
 
 	defer closeOnError(&closeOnErr, dsComponents.databaseClient.Close, "database client")

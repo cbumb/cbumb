@@ -1156,7 +1156,7 @@ func WaitForDeploymentRollout(
 
 		selector := buildMatchLabelSelector(t, deployment)
 		if selector == "" {
-			t.Logf("Deployment %s/%s has no match labels for selector", deployment.Namespace, deployment.Name)
+			t.Logf("Deployment %s/%s has empty or invalid selector", deployment.Namespace, deployment.Name)
 			return false
 		}
 
