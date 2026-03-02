@@ -1323,7 +1323,7 @@ func hasReadyPodFromReplicaSet(ctx context.Context, t *testing.T, c klient.Clien
 
 		podHash, exists := pod.Labels["pod-template-hash"]
 		if !exists || podHash != currentPodTemplateHash {
-			t.Logf("Skipping pod %s from old ReplicaSet (hash: %s)", pod.Name, pod.Labels["pod-template-hash"])
+			t.Logf("Skipping pod %s from old ReplicaSet (hash: %s)", pod.Name, podHash)
 			continue
 		}
 
