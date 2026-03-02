@@ -167,6 +167,10 @@ This workaround can be removed after KACE-1703 is completed.
 */
 func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, nodeName string,
 	labelValueSequence []string, waitForLabelRemoval bool, success chan bool) error {
+	if len(labelValueSequence) == 0 {
+		return fmt.Errorf("labelValueSequence must not be empty")
+	}
+
 	state := newLabelWatcherState(ctx, t, c, nodeName, labelValueSequence, waitForLabelRemoval)
 
 	t.Logf("[LabelWatcher] Starting watcher for node %s, expecting sequence: %v (starting at index %d)",

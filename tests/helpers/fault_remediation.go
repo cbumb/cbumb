@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 )
 
 type RemediationTestContextKey int
@@ -146,8 +147,8 @@ func cleanNodeMetadata(node *v1.Node) bool {
 	}
 
 	if node.Annotations != nil {
-		if _, exists := node.Annotations["latestFaultRemediationState"]; exists {
-			delete(node.Annotations, "latestFaultRemediationState")
+		if _, exists := node.Annotations[annotation.AnnotationKey]; exists {
+			delete(node.Annotations, annotation.AnnotationKey)
 
 			modified = true
 		}

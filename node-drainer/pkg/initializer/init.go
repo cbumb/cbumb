@@ -157,9 +157,11 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	}, nil
 }
 
+const cleanupTimeout = 5 * time.Second
+
 func closeOnError(shouldClose *bool, closer func(context.Context) error, resource string) {
 	if *shouldClose {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 
 		if cerr := closer(cleanupCtx); cerr != nil {

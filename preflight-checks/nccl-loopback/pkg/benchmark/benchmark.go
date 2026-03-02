@@ -69,7 +69,8 @@ func (r *Runner) Run(ctx context.Context, numGPUs, testSizeMB int) (*Result, err
 
 	sizeArg := fmt.Sprintf("%dM", testSizeMB)
 
-	cmd := exec.CommandContext(ctx, r.binaryPath, //nolint:gosec // G204 - binary path validated in NewRunner
+	// G204: binaryPath validated via config.FromEnv (parseBinaryPath → validateExecutable)
+	cmd := exec.CommandContext(ctx, r.binaryPath, //nolint:gosec
 		"-b", sizeArg,
 		"-e", sizeArg,
 		"-g", strconv.Itoa(numGPUs),

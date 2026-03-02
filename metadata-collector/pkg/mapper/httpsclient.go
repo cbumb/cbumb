@@ -128,6 +128,14 @@ func (client *kubeletHTTPSClient) ListPods() ([]corev1.Pod, error) {
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
+			snippet := make([]byte, 512)
+			n, _ := resp.Body.Read(snippet)
+
+			if n > 0 {
+				return fmt.Errorf("got a non-200 response code from /pods endpoint: %d, body: %s",
+					resp.StatusCode, string(snippet[:n]))
+			}
+
 			return fmt.Errorf("got a non-200 response code from /pods endpoint: %d", resp.StatusCode)
 		}
 

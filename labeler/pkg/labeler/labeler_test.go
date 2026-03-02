@@ -766,7 +766,7 @@ func TestKataLabelOverride(t *testing.T) {
 	}
 }
 
-func TestNewLabeler_InvalidLabelSelectors(t *testing.T) {
+func TestNewLabeler_InvalidLabelSelectors_ReturnsError(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 
 	t.Run("invalid pod label selector", func(t *testing.T) {
