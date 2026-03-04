@@ -51,7 +51,7 @@ var (
 	actionMTTRHistogram = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "janitor_action_mttr_seconds",
-			Help:    "Time taken to complete janitor actions",
+			Help:    "Time from CR creation to action completion",
 			Buckets: prometheus.ExponentialBuckets(10, 2, 10), // Log-scale buckets for MTTR
 		},
 		[]string{"action_type"},

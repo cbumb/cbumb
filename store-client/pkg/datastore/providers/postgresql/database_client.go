@@ -35,6 +35,7 @@ import (
 const (
 	maintenanceEventTableName = "maintenance_events"
 	trueString                = "TRUE"
+	nodeQuarantinedStatusPath = "healtheventstatus.nodequarantined"
 )
 
 // PostgreSQLDatabaseClient implements client.DatabaseClient for PostgreSQL
@@ -257,7 +258,7 @@ func (c *PostgreSQLDatabaseClient) UpdateDocumentStatus(
 	update := query.NewUpdate().Set(statusPath, status)
 
 	// For health_events table with nodequarantined status, also update denormalized column
-	if c.tableName == "health_events" && statusPath == "healtheventstatus.nodequarantined" {
+	if c.tableName == healthEventsTable && statusPath == nodeQuarantinedStatusPath {
 		update.Set("node_quarantined", status)
 	}
 
@@ -266,7 +267,8 @@ func (c *PostgreSQLDatabaseClient) UpdateDocumentStatus(
 	// For health_events table, use direct id column comparison
 	// For other tables, use JSON path data->>'_id'
 	var whereClause string
-	if c.tableName == "health_events" {
+
+	if c.tableName == healthEventsTable {
 		whereClause = fmt.Sprintf("id = $%d", len(args)+1)
 	} else {
 		whereClause = fmt.Sprintf("data->>'_id' = $%d", len(args)+1)
@@ -283,6 +285,56 @@ func (c *PostgreSQLDatabaseClient) UpdateDocumentStatus(
 	result, err := c.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to update document status: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("document not found: %s", documentID)
+	}
+
+	return nil
+}
+
+// UpdateDocumentStatusFields updates multiple status fields in a document in one operation.
+func (c *PostgreSQLDatabaseClient) UpdateDocumentStatusFields(
+	ctx context.Context, documentID string, fields map[string]interface{},
+) error {
+	if len(fields) == 0 {
+		return nil
+	}
+
+	update := query.NewUpdate()
+
+	for path, value := range fields {
+		update.Set(path, value)
+
+		if c.tableName == healthEventsTable && path == nodeQuarantinedStatusPath {
+			update.Set("node_quarantined", value)
+		}
+	}
+
+	setClause, args := update.ToSQL()
+
+	var whereClause string
+
+	if c.tableName == healthEventsTable {
+		whereClause = fmt.Sprintf("id = $%d", len(args)+1)
+	} else {
+		whereClause = fmt.Sprintf("data->>'_id' = $%d", len(args)+1)
+	}
+
+	//nolint:gosec // G201: table name is controlled internally
+	q := fmt.Sprintf("UPDATE %s SET %s WHERE %s", c.tableName, setClause, whereClause)
+
+	args = append(args, documentID)
+
+	result, err := c.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update document status fields: %w", err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
@@ -397,7 +449,7 @@ func (c *PostgreSQLDatabaseClient) convertUpdateToSetClause(
 
 			// For health_events table, also update denormalized columns to keep them in sync
 			// This ensures PostgreSQL changelog triggers capture the correct values
-			if c.tableName == healthEventsTable && key == "healtheventstatus.nodequarantined" {
+			if c.tableName == healthEventsTable && key == nodeQuarantinedStatusPath {
 				slog.Debug("Also updating denormalized node_quarantined column", "value", value)
 				builder.Set("node_quarantined", value)
 			}

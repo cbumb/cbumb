@@ -197,7 +197,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 	templateData := templateDataFromEvent(healthEvent, healthEventID, recommendedActionName,
 		groupConfig.ImpactedEntityScopeValue, maintenanceResource)
 
-	actualCRName, err := c.createMaintenanceCR(ctx, selectedTemplate, templateData, actionKey, node, healthEvent.NodeName)
+	actualCRName, err := c.createMaintenanceCR(ctx, selectedTemplate, templateData, actionKey, node, healthEventData)
 	if err != nil {
 		return "", err
 	}
@@ -230,10 +230,10 @@ func templateDataFromEvent(healthEvent *protos.HealthEvent, healthEventID, recom
 
 // createMaintenanceCR renders the template, sets owner ref, and creates the maintenance CR.
 func (c *FaultRemediationClient) createMaintenanceCR(ctx context.Context, selectedTemplate *template.Template,
-	templateData TemplateData, actionKey string, node *corev1.Node, nodeName string,
+	templateData TemplateData, actionKey string, node *corev1.Node, healthEventData *events.HealthEventData,
 ) (string, error) {
 	slog.Info("Creating maintenance CR",
-		"node", nodeName,
+		"node", healthEventData.HealthEvent.NodeName,
 		"template", actionKey,
 		"nodeUID", node.UID)
 
@@ -250,16 +250,24 @@ func (c *FaultRemediationClient) createMaintenanceCR(ctx context.Context, select
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			slog.Info("Maintenance CR already exists for node, treating as success",
-				"CR", maintenance.GetName(), "node", nodeName)
+				"CR", maintenance.GetName(), "node", healthEventData.HealthEvent.NodeName)
 
 			return maintenance.GetName(), nil
 		}
 
 		return "", fmt.Errorf("failed to create maintenance CR: %w", err)
+	} else if healthEventData.HealthEventStatus.DrainFinishTimestamp != nil {
+		duration := time.Since(*healthEventData.HealthEventStatus.DrainFinishTimestamp).Seconds()
+		if duration > 0 {
+			slog.Info("Fault remediation CR generation duration",
+				"duration", duration,
+				"node", healthEventData.HealthEvent.NodeName)
+			metrics.CRGenerationDuration.Observe(duration)
+		}
 	}
 
 	slog.Info("Created Maintenance CR successfully",
-		"crName", maintenance.GetName(), "node", nodeName, "template", actionKey)
+		"crName", maintenance.GetName(), "node", healthEventData.HealthEvent.NodeName, "template", actionKey)
 
 	return maintenance.GetName(), nil
 }

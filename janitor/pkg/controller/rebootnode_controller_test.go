@@ -16,12 +16,15 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -70,6 +73,32 @@ func TestRebootNodeReconciler_getRebootTimeout(t *testing.T) {
 			timeout := r.getRebootTimeout()
 			if timeout != tt.expectedTimeout {
 				t.Errorf("getRebootTimeout() = %v, want %v", timeout, tt.expectedTimeout)
+			}
+		})
+	}
+}
+
+// Test_isTransientGRPCError cases follow the order of checks in isTransientGRPCError:
+// nil → context.DeadlineExceeded (and wrapped) → gRPC Unavailable/DeadlineExceeded → other (non-transient).
+func Test_isTransientGRPCError(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		transient bool
+	}{
+		{"nil", nil, false},
+		{"context.DeadlineExceeded", context.DeadlineExceeded, true},
+		{"wrapped context.DeadlineExceeded", fmt.Errorf("wrap: %w", context.DeadlineExceeded), true},
+		{"gRPC Unavailable", status.Errorf(codes.Unavailable, "unavailable"), true},
+		{"gRPC DeadlineExceeded", status.Errorf(codes.DeadlineExceeded, "deadline"), true},
+		{"gRPC Internal (non-transient)", status.Errorf(codes.Internal, "internal"), false},
+		{"plain error (non-gRPC)", errors.New("other"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isTransientGRPCError(tt.err)
+			if got != tt.transient {
+				t.Errorf("isTransientGRPCError() = %v, want %v", got, tt.transient)
 			}
 		})
 	}
@@ -269,6 +298,28 @@ var _ = Describe("RebootNode Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify still in progress
+			Expect(updatedRebootNode.Status.CompletionTime).To(BeNil())
+			Expect(updatedRebootNode.IsRebootInProgress()).To(BeTrue())
+		})
+
+		It("should requeue on transient CSP error during node ready check instead of failing", func() {
+			// Configure mock to return transient gRPC error so controller requeues instead of failing
+			mockCSP.Server.SetNodeReadyError(status.Errorf(codes.Unavailable, "transient"))
+
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name: testRebootNode.Name,
+				},
+			}
+
+			result, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueBackoffForTransientCSPError))
+
+			// Verify still in progress (no completion, will retry)
+			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: testRebootNode.Name}, &updatedRebootNode)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRebootNode.Status.CompletionTime).To(BeNil())
 			Expect(updatedRebootNode.IsRebootInProgress()).To(BeTrue())
 		})

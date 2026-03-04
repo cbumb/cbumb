@@ -436,7 +436,6 @@ func (r *FaultRemediationReconciler) updateNodeRemediatedStatus(
 	if err != nil {
 		return err
 	}
-
 	// Create status object for the update
 	status := datastore.HealthEventStatus{}
 	faultRemediated := nodeRemediatedStatus

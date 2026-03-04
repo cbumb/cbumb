@@ -83,10 +83,12 @@ type OperationStatus struct {
 
 // HealthEventStatus represents status of a health event
 type HealthEventStatus struct {
-	NodeQuarantined          *Status         `json:"nodequarantined"`
-	UserPodsEvictionStatus   OperationStatus `json:"userpodsevictionstatus"`
-	FaultRemediated          *bool           `json:"faultremediated"`
-	LastRemediationTimestamp *time.Time      `json:"lastremediationtimestamp,omitempty"`
+	NodeQuarantined           *Status         `json:"nodequarantined"`
+	QuarantineFinishTimestamp *time.Time      `json:"quarantinefinishtimestamp,omitempty"`
+	UserPodsEvictionStatus    OperationStatus `json:"userpodsevictionstatus"`
+	DrainFinishTimestamp      *time.Time      `json:"drainfinishtimestamp,omitempty"`
+	FaultRemediated           *bool           `json:"faultremediated"`
+	LastRemediationTimestamp  *time.Time      `json:"lastremediationtimestamp,omitempty"`
 }
 
 // HealthEventWithStatus wraps a health event with status information

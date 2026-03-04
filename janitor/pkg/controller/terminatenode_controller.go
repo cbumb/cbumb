@@ -141,7 +141,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 
 			// Record successful termination metrics
 			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusSucceeded, terminateNode.Spec.NodeName)
-			metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeTerminate, time.Since(terminateNode.Status.StartTime.Time))
+			metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeTerminate, time.Since(terminateNode.CreationTimestamp.Time))
 
 			result = ctrl.Result{} // Don't requeue on success
 		} else if isNodeNotReady(node) {
@@ -163,7 +163,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 
 			// Record successful termination metrics
 			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusSucceeded, node.Name)
-			metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeTerminate, time.Since(terminateNode.Status.StartTime.Time))
+			metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeTerminate, time.Since(terminateNode.CreationTimestamp.Time))
 
 			result = ctrl.Result{} // Don't requeue on success
 		} else if time.Since(terminateNode.Status.StartTime.Time) > r.getTimeout() {
