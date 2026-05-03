@@ -32,6 +32,14 @@ import (
 
 const (
 	podResourcesKubeletSocket = "/var/lib/kubelet/pod-resources/kubelet.sock"
+
+	// maxKubeletPodResourcesMsgBytes caps the gRPC client receive size for
+	// kubelet's ListPodResources response. The gRPC default is 4 MiB, which
+	// is exceeded on dense GPU/RDMA nodes (observed 22 MiB on a GB300 box;
+	// see PD Q0AP52ZHEFN7P1). 64 MiB matches the cap used internally by
+	// kubernetes/kubernetes for the same RPC and gives ~3x headroom over the
+	// largest response seen in production.
+	maxKubeletPodResourcesMsgBytes = 64 * 1024 * 1024
 )
 
 type KubeletGRPClient interface {
@@ -51,27 +59,41 @@ func NewKubeletGRPClient(ctx context.Context) (KubeletGRPClient, error) {
 		return nil, err
 	}
 
-	resolver.SetDefaultScheme("passthrough")
-
-	connection, err := grpc.NewClient(
-		podResourcesKubeletSocket,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
-			d := net.Dialer{}
-			return d.DialContext(ctx, "unix", addr)
-		}),
-	)
+	connection, client, err := dialPodResourcesClient(podResourcesKubeletSocket)
 	if err != nil {
-		return nil, fmt.Errorf("failure connecting to '%s'; err: %w", podResourcesKubeletSocket, err)
+		return nil, err
 	}
-
-	client := v1.NewPodResourcesListerClient(connection)
 
 	return &kubeletGRPClient{
 		ctx:                ctx,
 		connection:         connection,
 		podResourcesClient: client,
 	}, nil
+}
+
+// dialPodResourcesClient builds a gRPC client for kubelet's PodResourcesLister
+// service over a local unix socket. It is a helper for NewKubeletGRPClient and
+// is also exercised directly in unit tests against an in-process server so the
+// MaxCallRecvMsgSize cap below is regression-tested.
+func dialPodResourcesClient(socketPath string) (*grpc.ClientConn, v1.PodResourcesListerClient, error) {
+	resolver.SetDefaultScheme("passthrough")
+
+	connection, err := grpc.NewClient(
+		socketPath,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
+			d := net.Dialer{}
+			return d.DialContext(ctx, "unix", addr)
+		}),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(maxKubeletPodResourcesMsgBytes),
+		),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failure connecting to '%s'; err: %w", socketPath, err)
+	}
+
+	return connection, v1.NewPodResourcesListerClient(connection), nil
 }
 
 /*
